@@ -14,7 +14,7 @@
 // vel/acc: 暂不开放，传0；cmdT: ServoJ指令周期
 #define SELF_TEST_ACC       0.0f
 #define SELF_TEST_VEL       0.0f
-#define SELF_TEST_CMDT      1.0f    // 1s 指令周期
+#define SELF_TEST_CMDT      2.0f    // 2s 指令周期 (50% speed)
 #define SELF_TEST_SETTLE_MS 5000    // 每个位置停留时间(ms)
 #define SELF_TEST_TIMEOUT   300000  // 5min overall timeout
 

@@ -5,8 +5,8 @@
 // Accepts commands from PC via UDP on port 20008
 // BOOT button triggers self-test sequence (test1→test8→home)
 //
-// ServoJ parameters follow official SDK: acc=0, vel=0, cmdT=0.008s
-// Incremental interpolation: 0.1° per step, 8ms per step
+// ServoJ parameters follow official SDK: acc=0, vel=0, cmdT=1.0s
+// CNDE protocol (port 20005) for real-time state feedback
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -15,6 +15,7 @@
 #include "config.h"
 #include "wifi_manager.h"
 #include "fairino_udp.h"
+#include "cnde_client.h"
 
 // ── UDP Command Server ──────────────────────────────────────────────
 #define CMD_SERVER_PORT  20008
@@ -28,6 +29,7 @@ static Adafruit_NeoPixel s_led(1, PIN_WS2812, NEO_RGB + NEO_KHZ800);
 
 // ── Fairino Client ──────────────────────────────────────────────────
 static FairinoUDPClient s_fairino;
+static CNDEClient s_cnde;
 
 // ── Self-test state machine ─────────────────────────────────────────
 enum SelfTestState { ST_IDLE, ST_MOVE, ST_SETTLE, ST_DONE, ST_ERROR };
@@ -167,12 +169,18 @@ static void processCmd(const String& line) {
     }
 
     if (line == "status") {
-        cmdRespondF("WiFi:%s IP:%s RSSI:%d Robot:%s SelfTest:%d\r\n",
-                    wifiMgrConnected() ? "OK" : "---",
-                    wifiMgrLocalIP().c_str(),
-                    wifiMgrRssi(),
-                    s_fairino.isReady() ? "ready" : "offline",
-                    stState);
+        const RobotStateData& rs = s_cnde.getState();
+        if (rs.valid) {
+            cmdRespondF("J:%.1f,%.1f,%.1f,%.1f,%.1f,%.1f robot:%d prog:%d err:%d/%d\r\n",
+                        rs.jointPos[0], rs.jointPos[1], rs.jointPos[2],
+                        rs.jointPos[3], rs.jointPos[4], rs.jointPos[5],
+                        rs.robotState, rs.programState, rs.mainCode, rs.subCode);
+        } else {
+            cmdRespondF("WiFi:%s CNDE:%s SelfTest:%d\r\n",
+                        wifiMgrConnected() ? "OK" : "---",
+                        s_cnde.isConnected() ? "OK" : "---",
+                        stState);
+        }
         return;
     }
 
@@ -251,6 +259,9 @@ void setup() {
     s_fairino.begin();
     s_fairino.setTarget(ROBOT_IP, ROBOT_UDP_PORT);
 
+    // CNDE state feedback client
+    s_cnde.begin(ROBOT_IP, 20005);
+
     // Ready
     Serial.println("[MAIN] Setup done. UDP cmd server on port 20008.");
     Serial.println("[MAIN] Press BOOT button or send 'selftest' via UDP to start self-test.");
@@ -267,6 +278,9 @@ void loop() {
 
     // 1. WiFi state machine
     wifiMgrTick();
+
+    // 1b. CNDE state feedback
+    if (wifiMgrConnected()) s_cnde.tick();
 
     // 2. Bind UDP cmd server once WiFi is up
     if (wifiMgrConnected() && !cmdBound) {
@@ -344,10 +358,19 @@ void loop() {
     // 8. Heartbeat (10s)
     if (now - lastBeat >= 10000) {
         lastBeat = now;
-        Serial.printf("[MAIN] up %lus heap %u WiFi:%s robot:%s st:%d\n",
-                      now / 1000, ESP.getFreeHeap(),
-                      wifiMgrConnected() ? "OK" : "---",
-                      s_fairino.isReady() ? "ready" : "offline",
-                      stState);
+        const RobotStateData& rs = s_cnde.getState();
+        if (rs.valid) {
+            Serial.printf("[MAIN] up %lus heap %u J:%.1f,%.1f,%.1f,%.1f,%.1f,%.1f st:%d\n",
+                          now / 1000, ESP.getFreeHeap(),
+                          rs.jointPos[0], rs.jointPos[1], rs.jointPos[2],
+                          rs.jointPos[3], rs.jointPos[4], rs.jointPos[5],
+                          stState);
+        } else {
+            Serial.printf("[MAIN] up %lus heap %u WiFi:%s CNDE:%s st:%d\n",
+                          now / 1000, ESP.getFreeHeap(),
+                          wifiMgrConnected() ? "OK" : "---",
+                          s_cnde.isConnected() ? "OK" : "---",
+                          stState);
+        }
     }
 }
