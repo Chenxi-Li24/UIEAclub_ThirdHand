@@ -46,20 +46,22 @@ int FairinoUDPClient::sendCommand(int cmdID, const String& content) {
     String frame = packFrame(cmdID, content);
     _count++;
 
-    if (!_udp.beginPacket(_ip.c_str(), _port)) {
-        Serial.println("[FR-UDP] ERROR: beginPacket failed");
-        return FR_ERR_SEND_FAIL;
+    // Retry up to 3 times with backoff on ENOMEM (TX buffer full)
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (!_udp.beginPacket(_ip.c_str(), _port)) {
+            delay(10);
+            continue;
+        }
+        _udp.write((const uint8_t*)frame.c_str(), frame.length());
+        if (_udp.endPacket()) {
+            Serial.printf("[FR-UDP] SEND count=%d cmdID=%d\n", _count-1, cmdID);
+            return FR_OK;
+        }
+        // endPacket failed — likely TX buffer full, wait and retry
+        Serial.printf("[FR-UDP] endPacket fail attempt %d\n", attempt+1);
+        delay(50);
     }
-
-    size_t sent = _udp.write((const uint8_t*)frame.c_str(), frame.length());
-    if (!_udp.endPacket()) {
-        Serial.println("[FR-UDP] ERROR: endPacket failed");
-        return FR_ERR_SEND_FAIL;
-    }
-
-    Serial.printf("[FR-UDP] SEND  count=%d cmdID=%d len=%d\n  frame: %s\n",
-                  _count - 1, cmdID, content.length(), frame.c_str());
-    return FR_OK;
+    return FR_ERR_SEND_FAIL;
 }
 
 // ── Receive Response ─────────────────────────────────────────────────
