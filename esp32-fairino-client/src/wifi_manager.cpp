@@ -1,7 +1,18 @@
-// DeskPet WiFi Manager
+// WiFi Manager — state machine, auto-connect, static IP
 #include "wifi_manager.h"
 #include <WiFi.h>
-#include "stats.h"
+#include <esp_wifi.h>
+
+// ── Credential storage (in-memory, no NVS) ──────────────────────────
+static char _wifiSsid[64]  = {0};
+static char _wifiPass[128] = {0};
+
+static void wifiCredSave(const char* ssid, const char* pass) {
+    strncpy(_wifiSsid, ssid, sizeof(_wifiSsid)-1);
+    strncpy(_wifiPass, pass, sizeof(_wifiPass)-1);
+}
+static bool wifiCredHas()           { return _wifiSsid[0] != 0; }
+static const char* wifiCredSsid()   { return _wifiSsid; }
 
 static WifiMgrState  s_state        = WM_IDLE;
 static uint32_t      s_connectStart = 0;
@@ -44,19 +55,8 @@ static void onWifiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
 }
 
 void wifiMgrInit() {
-  wifiCredLoad();
   WiFi.mode(WIFI_STA);
   WiFi.onEvent(onWifiEvent);
-  // Let ESP-IDF manage WiFi sleep (required for BLE coexistence)
-  if (wifiCredHas()) {
-    Serial.printf("[WiFi] Auto-connect to '%s'...\n", wifiCredSsid());
-    s_state = WM_AUTO_CONNECT;
-    s_connectStart = millis();
-    WiFi.begin(_wifiSsid, _wifiPass);
-  } else {
-    // No saved credentials — stay idle, wait for BLE/web provisioning
-    Serial.println("[WiFi] No saved credentials — waiting for provisioning");
-  }
 }
 
 void wifiMgrTick() {

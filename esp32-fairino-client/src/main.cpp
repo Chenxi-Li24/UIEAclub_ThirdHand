@@ -1,23 +1,20 @@
-// ESP32 Fairino Robot Client — WiFi UDP Command Server
+// ESP32 Fairino Robot Client — UDP Command Server + Self-Test
 //
-// Hardware: ESP32-S3 + WS2812 LED
+// Hardware: ESP32-S3 + WS2812 LED + BOOT button
 // Communicates with Fairino robot controller via UDP frame protocol (port 20007)
-// Accepts commands from PC via UDP on port 20008 — no serial needed!
+// Accepts commands from PC via UDP on port 20008
+// BOOT button triggers self-test sequence (test1→test8→home)
+//
+// ServoJ parameters follow official SDK: acc=0, vel=0, cmdT=0.008s
+// Incremental interpolation: 0.1° per step, 8ms per step
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
 
+#include "config.h"
 #include "wifi_manager.h"
-#include "stats.h"
 #include "fairino_udp.h"
-
-// ── Hardcoded WiFi ──────────────────────────────────────────────────
-#define DEFAULT_WIFI_SSID     "Xiaomi_7D5E"
-#define DEFAULT_WIFI_PASS     "12345678"
-#define DEFAULT_STATIC_IP     "192.168.58.100"
-#define DEFAULT_STATIC_GW     "192.168.58.1"
-#define DEFAULT_STATIC_MASK   "255.255.255.0"
 
 // ── UDP Command Server ──────────────────────────────────────────────
 #define CMD_SERVER_PORT  20008
@@ -26,15 +23,31 @@
 static WiFiUDP s_cmdServer;
 
 // ── LED (WS2812) ────────────────────────────────────────────────────
-#ifndef PIN_WS2812
-#define PIN_WS2812  17
-#endif
-#define WS2812_NUM  1
 #include <Adafruit_NeoPixel.h>
-static Adafruit_NeoPixel s_led(WS2812_NUM, PIN_WS2812, NEO_RGB + NEO_KHZ800);
+static Adafruit_NeoPixel s_led(1, PIN_WS2812, NEO_RGB + NEO_KHZ800);
 
 // ── Fairino Client ──────────────────────────────────────────────────
 static FairinoUDPClient s_fairino;
+
+// ── Self-test state machine ─────────────────────────────────────────
+enum SelfTestState { ST_IDLE, ST_MOVE, ST_SETTLE, ST_DONE, ST_ERROR };
+static SelfTestState stState = ST_IDLE;
+static unsigned long stStartTime = 0;
+static unsigned long stSettleStart = 0;
+static int stSegment = -1;
+
+static const float SELF_TEST_POS[][6] = {
+    { 60.485f, -69.577f, -91.012f, -84.252f, 100.514f,  -8.943f},  // test1 (home)
+    { 18.048f,-125.631f, -65.685f, -72.588f,   2.137f,  47.036f},  // test2
+    { 17.968f, -87.820f,  -0.081f, -91.700f,  94.012f,  47.037f},  // test3
+    { 18.853f,-121.856f, -55.031f,-104.126f, -73.387f,  47.030f},  // test4
+    { 19.604f,-122.555f,  92.010f, -78.909f, -78.479f,  47.036f},  // test5
+    { 23.043f,-114.471f,  54.353f,-120.587f, -89.061f,  47.036f},  // test6
+    { 22.383f,-112.778f,  26.096f, -61.089f, -88.293f,  47.037f},  // test7
+    { 22.385f,-110.832f,  35.234f, -60.983f, -88.319f,  47.037f},  // test8
+    { 60.485f, -69.577f, -91.012f, -84.252f, 100.514f,  -8.943f},  // home=test1
+};
+static const int SELF_TEST_COUNT = sizeof(SELF_TEST_POS) / sizeof(SELF_TEST_POS[0]);
 
 // ── LED helpers ─────────────────────────────────────────────────────
 static void ledSet(uint8_t r, uint8_t g, uint8_t b, uint8_t brightness = 32) {
@@ -50,7 +63,7 @@ static void ledBreath(uint8_t r, uint8_t g, uint8_t b) {
     ledSet(r, g, b, bri);
 }
 
-// ── Send UDP response ───────────────────────────────────────────────
+// ── Send UDP response to PC ─────────────────────────────────────────
 static void cmdRespond(const char* msg) {
     s_cmdServer.beginPacket();
     s_cmdServer.write((const uint8_t*)msg, strlen(msg));
@@ -66,19 +79,100 @@ static void cmdRespondF(const char* fmt, ...) {
     cmdRespond(buf);
 }
 
+// ── Self-test: send ServoJ to current target ───────────────────────
+static void selfTestSendTarget() {
+    if (stSegment < 0 || stSegment >= SELF_TEST_COUNT) return;
+    const float* t = SELF_TEST_POS[stSegment];
+    s_fairino.servoJ(t[0], t[1], t[2], t[3], t[4], t[5],
+                     SELF_TEST_ACC, SELF_TEST_VEL, SELF_TEST_CMDT, 0, 0);
+}
+
+// ── Self-test state machine (called from loop) ──────────────────────
+static void selfTestTick() {
+    unsigned long now = millis();
+
+    switch (stState) {
+    case ST_IDLE:
+        return;
+
+    case ST_MOVE:
+        // Send ServoJ to target, then enter settle
+        selfTestSendTarget();
+        delay((int)(SELF_TEST_CMDT * 1000));
+        stState = ST_SETTLE;
+        stSettleStart = now;
+        Serial.printf("[SELF-TEST] → seg %d target sent\n", stSegment);
+        break;
+
+    case ST_SETTLE:
+        // Keep sending target during settle so robot arrives
+        selfTestSendTarget();
+        delay((int)(SELF_TEST_CMDT * 1000));
+        if (now - stSettleStart >= (unsigned long)SELF_TEST_SETTLE_MS) {
+            stSegment++;
+            if (stSegment >= SELF_TEST_COUNT) {
+                s_fairino.servoMoveEnd();
+                stState = ST_DONE;
+                Serial.println("[SELF-TEST] DONE — ServoMoveEnd sent");
+                ledSet(0, 0, 0, 0);
+                return;
+            }
+            stState = ST_MOVE;
+        }
+        break;
+
+    case ST_DONE:
+    case ST_ERROR:
+        break;
+    }
+
+    // Overall timeout
+    if (stState == ST_MOVE || stState == ST_SETTLE) {
+        if (now - stStartTime > SELF_TEST_TIMEOUT) {
+            s_fairino.servoMoveEnd();
+            stState = ST_ERROR;
+            Serial.println("[SELF-TEST] TIMEOUT");
+            ledSet(255, 0, 0, 64);
+        }
+    }
+}
+
+// ── Start self-test ─────────────────────────────────────────────────
+static void selfTestStart() {
+    if (stState == ST_MOVE || stState == ST_SETTLE) {
+        Serial.println("[SELF-TEST] Already running");
+        return;
+    }
+    if (!wifiMgrConnected()) {
+        Serial.println("[SELF-TEST] No WiFi — cannot start");
+        return;
+    }
+    Serial.printf("[SELF-TEST] Starting %d positions\n", SELF_TEST_COUNT);
+
+    s_fairino.servoMoveStart();
+    delay(50);
+
+    stSegment = 0;
+    stState = ST_MOVE;
+    stStartTime = millis();
+    ledSet(255, 255, 0, 64);
+    Serial.println("[SELF-TEST] ServoMoveStart sent");
+}
+
 // ── Command processor ───────────────────────────────────────────────
 static void processCmd(const String& line) {
     if (line == "help") {
-        cmdRespond("help status test 'servo start' 'servo end' 'servo j1 ...' 'servo j1wave [cycles] [deg/s]'\r\n");
+        cmdRespond("help | status | test | selftest | servo start | servo end | servo j1 <j1-j6> [delta] [dur]\r\n");
         return;
     }
 
     if (line == "status") {
-        cmdRespondF("WiFi:%s IP:%s RSSI:%d Robot:%s\r\n",
+        cmdRespondF("WiFi:%s IP:%s RSSI:%d Robot:%s SelfTest:%d\r\n",
                     wifiMgrConnected() ? "OK" : "---",
                     wifiMgrLocalIP().c_str(),
                     wifiMgrRssi(),
-                    s_fairino.isReady() ? "ready" : "offline");
+                    s_fairino.isReady() ? "ready" : "offline",
+                    stState);
         return;
     }
 
@@ -87,6 +181,12 @@ static void processCmd(const String& line) {
         ledSet(255, 255, 0, 32);
         s_fairino.servoTimingTest();
         cmdRespond("OK: timing test sent\r\n");
+        return;
+    }
+
+    if (line == "selftest") {
+        selfTestStart();
+        cmdRespond("OK: self-test started\r\n");
         return;
     }
 
@@ -103,133 +203,26 @@ static void processCmd(const String& line) {
         return;
     }
 
-    // servo j1 <j1> <j2> <j3> <j4> <j5> <j6> [delta_deg] [duration_s]
+    // servo j1 <j1> <j2> <j3> <j4> <j5> <j6>
     if (line.startsWith("servo j1 ")) {
         if (!wifiMgrConnected()) { cmdRespond("ERR: no WiFi\r\n"); return; }
         float joints[6];
-        float delta = 2.0f;
-        float duration = 3.0f;
-        int n = sscanf(line.c_str(), "servo j1 %f %f %f %f %f %f %f %f",
-                       &joints[0], &joints[1], &joints[2], &joints[3], &joints[4], &joints[5],
-                       &delta, &duration);
+        int n = sscanf(line.c_str(), "servo j1 %f %f %f %f %f %f",
+                       &joints[0], &joints[1], &joints[2], &joints[3], &joints[4], &joints[5]);
         if (n < 6) {
-            cmdRespond("Usage: servo j1 <j1> <j2> <j3> <j4> <j5> <j6> [delta=2] [duration_s=3]\r\n");
+            cmdRespond("Usage: servo j1 <j1> <j2> <j3> <j4> <j5> <j6>\r\n");
             return;
         }
 
-        float durationS = (n >= 8) ? duration : 3.0f;
-        float stepDeg = (n >= 7) ? delta : 2.0f;
-        int steps = (int)(durationS / 0.020f);
-        if (steps < 5) steps = 5;
-
-        cmdRespondF("ROTATING J1 by %.1f deg over %.1fs (%d steps)\r\n",
-                    stepDeg, durationS, steps);
-
-        ledSet(255, 255, 0, 64);
-
-        // ServoJ does NOT need ServoMoveStart/End — bare ServoJ works
-        float startJ1 = joints[0];
-        for (int i = 1; i <= steps; i++) {
-            float t = (float)i / (float)steps;
-            float curJ1 = startJ1 + stepDeg * t;
-            int r = s_fairino.servoJ(curJ1, joints[1], joints[2], joints[3], joints[4], joints[5],
-                                      0.1, 0.1, 0.05, 0, 0);
-            if (r != FR_OK) {
-                cmdRespondF("ERR at step %d/%d\r\n", i, steps);
-                return;
-            }
-            delay(20);
+        int r = s_fairino.servoJ(joints[0], joints[1], joints[2], joints[3], joints[4], joints[5],
+                                  SELF_TEST_ACC, SELF_TEST_VEL, SELF_TEST_CMDT, 0, 0);
+        if (r != FR_OK) {
+            cmdRespondF("ERR: servoJ failed %d\r\n", r);
+        } else {
+            cmdRespondF("OK: servo j1 → %.1f %.1f %.1f %.1f %.1f %.1f\r\n",
+                        joints[0], joints[1], joints[2], joints[3], joints[4], joints[5]);
         }
-
         ledSet(0, 255, 0, 32);
-        cmdRespond("OK: J1 rotation complete\r\n");
-        return;
-    }
-
-    // servo j1wave [cycles=3] [deg_per_sec=10]
-    //   Reciprocates J1 between -60° and 0°, holding other joints constant
-    if (line.startsWith("servo j1wave")) {
-        if (!wifiMgrConnected()) { cmdRespond("ERR: no WiFi\r\n"); return; }
-
-        // User's current joint angles (fixed reference)
-        const float fixedJoints[6] = {
-            -59.143f, -57.948f, -102.472f, -106.385f, 117.306f, -12.648f
-        };
-
-        const float J1_LOW  = -60.0f;   // target: sweep low
-        const float J1_HIGH =   0.0f;   // target: sweep high
-        const float RANGE   = J1_HIGH - J1_LOW;  // 60°
-
-        int   cycles     = 3;
-        float degPerSec  = 10.0f;
-
-        int n = sscanf(line.c_str(), "servo j1wave %d %f", &cycles, &degPerSec);
-        if (n >= 2 && cycles < 1)  cycles = 1;
-        if (cycles > 100) cycles = 100;  // safety cap
-        if (n >= 3 && degPerSec < 1.0f) degPerSec = 1.0f;
-        if (degPerSec > 100.0f) degPerSec = 100.0f;
-
-        float stepDeg   = 2.0f;
-        int   intervalMs = (int)(stepDeg / degPerSec * 1000.0f);
-        if (intervalMs < 20) intervalMs = 20;
-
-        int stepsPerHalf = (int)(RANGE / stepDeg);
-        int totalSteps   = cycles * 2 * stepsPerHalf;
-
-        cmdRespondF("J1WAVE: %d cycles, %.0f°/s (step=%.0f° every %dms, %d steps half, %d total)\r\n",
-                    cycles, degPerSec, stepDeg, intervalMs, stepsPerHalf, totalSteps);
-
-        ledSet(255, 255, 0, 64);
-
-        // ServoJ standalone — no ServoMoveStart/End needed
-        float j1Cur = J1_LOW;  // start from low end
-        int stepCount = 0;
-        bool aborted = false;
-
-        for (int cyc = 0; cyc < cycles && !aborted; cyc++) {
-            // ── Forward: -60 → 0 ──
-            for (int s = 0; s < stepsPerHalf; s++) {
-                float t = (float)(s + 1) / (float)stepsPerHalf;
-                j1Cur = J1_LOW + RANGE * t;
-                int r = s_fairino.servoJ(j1Cur,
-                    fixedJoints[1], fixedJoints[2], fixedJoints[3],
-                    fixedJoints[4], fixedJoints[5],
-                    0.1, 0.1, 0.05, 0, 0);
-                if (r != FR_OK) {
-                    cmdRespondF("ERR: forward step %d (cyc %d) J1=%.1f\r\n", s, cyc+1, j1Cur);
-                    aborted = true;
-                    break;
-                }
-                stepCount++;
-                delay(intervalMs);
-            }
-            if (aborted) break;
-
-            // ── Reverse: 0 → -60 ──
-            for (int s = 0; s < stepsPerHalf; s++) {
-                float t = (float)(s + 1) / (float)stepsPerHalf;
-                j1Cur = J1_HIGH - RANGE * t;
-                int r = s_fairino.servoJ(j1Cur,
-                    fixedJoints[1], fixedJoints[2], fixedJoints[3],
-                    fixedJoints[4], fixedJoints[5],
-                    0.1, 0.1, 0.05, 0, 0);
-                if (r != FR_OK) {
-                    cmdRespondF("ERR: reverse step %d (cyc %d) J1=%.1f\r\n", s, cyc+1, j1Cur);
-                    aborted = true;
-                    break;
-                }
-                stepCount++;
-                delay(intervalMs);
-            }
-
-            // Brief pause between cycles
-            if (!aborted && cyc < cycles - 1) {
-                delay(200);
-            }
-        }
-
-        ledSet(0, 255, 0, 32);
-        cmdRespondF("OK: J1 wave done — %d steps sent, J1 end=%.1f\r\n", stepCount, j1Cur);
         return;
     }
 
@@ -238,7 +231,6 @@ static void processCmd(const String& line) {
 
 // ── Setup ───────────────────────────────────────────────────────────
 void setup() {
-    // 1. Serial (best-effort, may not be visible)
     Serial.begin(115200);
     uint32_t serStart = millis();
     while (!Serial && (millis() - serStart < 3000)) { delay(10); }
@@ -246,30 +238,31 @@ void setup() {
     Serial.println();
     Serial.println("=== ESP32 Fairino Client ===");
 
-    // 2. LED
+    // LED
     s_led.begin();
     ledSet(255, 0, 0, 32);   // Red = booting
 
-    // 3. WiFi
+    // WiFi
     wifiMgrInit();
-    wifiCredClear();
-    wifiMgrConnectStatic(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS,
-                         DEFAULT_STATIC_IP, DEFAULT_STATIC_GW, DEFAULT_STATIC_MASK);
+    wifiMgrConnectStatic(WIFI_SSID, WIFI_PASS, STATIC_IP, STATIC_GW, STATIC_MASK);
     Serial.println("[MAIN] WiFi connecting...");
 
-    // 4. Fairino UDP client
+    // Fairino UDP client
     s_fairino.begin();
-    s_fairino.setTarget(FR_ROBOT_DEFAULT_IP, FR_ROBOT_UDP_PORT);
+    s_fairino.setTarget(ROBOT_IP, ROBOT_UDP_PORT);
 
-    // 5. Ready
+    // Ready
     Serial.println("[MAIN] Setup done. UDP cmd server on port 20008.");
+    Serial.println("[MAIN] Press BOOT button or send 'selftest' via UDP to start self-test.");
 }
 
 // ── Loop ────────────────────────────────────────────────────────────
 void loop() {
-    static uint32_t lastLed  = 0;
-    static bool     wasConn  = false;
+    static uint32_t lastLed   = 0;
+    static uint32_t lastBeat  = 0;
+    static bool     wasConn   = false;
     static bool     cmdBound  = false;
+    static bool     bootArmed = true;
     uint32_t now = millis();
 
     // 1. WiFi state machine
@@ -282,8 +275,8 @@ void loop() {
         Serial.printf("[MAIN] UDP cmd server listening on port %d\n", CMD_SERVER_PORT);
     }
 
-    // 3. Process incoming UDP commands
-    if (cmdBound) {
+    // 3. Process incoming UDP commands (only when self-test not running)
+    if (cmdBound && stState != ST_MOVE) {
         int pktSize = s_cmdServer.parsePacket();
         if (pktSize > 0 && pktSize < CMD_BUF_SIZE) {
             char buf[CMD_BUF_SIZE] = {0};
@@ -298,24 +291,46 @@ void loop() {
         }
     }
 
-    // 4. LED update (500ms)
+    // 4. BOOT button → start self-test
+    if (digitalRead(BOOT_BUTTON) == LOW) {
+        if (bootArmed) {
+            bootArmed = false;
+            selfTestStart();
+        }
+    } else {
+        bootArmed = true;
+    }
+
+    // 5. Self-test tick
+    selfTestTick();
+
+    // 6. LED update (500ms)
     if (now - lastLed > 500) {
         lastLed = now;
-        WifiMgrState st = wifiMgrState();
-        if (!wifiMgrConnected()) {
-            switch (st) {
-                case WM_IDLE:         ledBreath(0, 0, 255);  break;
-                case WM_AUTO_CONNECT:
-                case WM_CONNECTING:   ledSet(255, 255, 0, 32); break;
-                case WM_FAIL:         ledBreath(255, 0, 0);   break;
-                default: break;
-            }
+        if (stState == ST_MOVE || stState == ST_SETTLE) {
+            ledSet(255, 255, 0, 64);  // Yellow = self-test running
+        } else if (stState == ST_DONE) {
+            ledSet(0, 0, 0, 0);       // Off = done
+        } else if (stState == ST_ERROR) {
+            ledBreath(255, 0, 0);     // Red breath = error
         } else {
-            ledBreath(0, 255, 0);  // Green = WiFi OK
+            // Normal operation — show WiFi status
+            WifiMgrState st = wifiMgrState();
+            if (!wifiMgrConnected()) {
+                switch (st) {
+                    case WM_IDLE:         ledBreath(0, 0, 255);  break;
+                    case WM_AUTO_CONNECT:
+                    case WM_CONNECTING:   ledSet(255, 255, 0, 32); break;
+                    case WM_FAIL:         ledBreath(255, 0, 0);   break;
+                    default: break;
+                }
+            } else {
+                ledBreath(0, 255, 0);  // Green = WiFi OK, idle
+            }
         }
     }
 
-    // 5. WiFi state change logging
+    // 7. WiFi state change logging
     bool nowConn = wifiMgrConnected();
     if (nowConn != wasConn) {
         if (nowConn) {
@@ -326,5 +341,13 @@ void loop() {
         wasConn = nowConn;
     }
 
-    delay(10);
+    // 8. Heartbeat (10s)
+    if (now - lastBeat >= 10000) {
+        lastBeat = now;
+        Serial.printf("[MAIN] up %lus heap %u WiFi:%s robot:%s st:%d\n",
+                      now / 1000, ESP.getFreeHeap(),
+                      wifiMgrConnected() ? "OK" : "---",
+                      s_fairino.isReady() ? "ready" : "offline",
+                      stState);
+    }
 }
