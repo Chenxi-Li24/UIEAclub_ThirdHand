@@ -103,7 +103,6 @@ static void selfTestTick() {
         delay((int)(SELF_TEST_CMDT * 1000));
         stState = ST_SETTLE;
         stSettleStart = now;
-        Serial.printf("[SELF-TEST] → seg %d target sent\n", stSegment);
         break;
 
     case ST_SETTLE:
@@ -115,7 +114,6 @@ static void selfTestTick() {
             if (stSegment >= SELF_TEST_COUNT) {
                 s_fairino.servoMoveEnd();
                 stState = ST_DONE;
-                Serial.println("[SELF-TEST] DONE — ServoMoveEnd sent");
                 ledSet(0, 0, 0, 0);
                 return;
             }
@@ -171,7 +169,7 @@ static void processCmd(const String& line) {
     if (line == "status") {
         const RobotStateData& rs = s_cnde.getState();
         if (rs.valid) {
-            cmdRespondF("J:%.1f,%.1f,%.1f,%.1f,%.1f,%.1f robot:%d prog:%d err:%d/%d\r\n",
+            cmdRespondF("J1:%.1f J2:%.1f J3:%.1f J4:%.1f J5:%.1f J6:%.1f robot:%d prog:%d err:%d/%d\r\n",
                         rs.jointPos[0], rs.jointPos[1], rs.jointPos[2],
                         rs.jointPos[3], rs.jointPos[4], rs.jointPos[5],
                         rs.robotState, rs.programState, rs.mainCode, rs.subCode);
@@ -243,8 +241,7 @@ void setup() {
     uint32_t serStart = millis();
     while (!Serial && (millis() - serStart < 3000)) { delay(10); }
     delay(100);
-    Serial.println();
-    Serial.println("=== ESP32 Fairino Client ===");
+    Serial.println("\n=== ESP32 Fairino Client ===");
 
     // LED
     s_led.begin();
@@ -253,7 +250,6 @@ void setup() {
     // WiFi
     wifiMgrInit();
     wifiMgrConnectStatic(WIFI_SSID, WIFI_PASS, STATIC_IP, STATIC_GW, STATIC_MASK);
-    Serial.println("[MAIN] WiFi connecting...");
 
     // Fairino UDP client
     s_fairino.begin();
@@ -261,10 +257,6 @@ void setup() {
 
     // CNDE state feedback client
     s_cnde.begin(ROBOT_IP, 20005);
-
-    // Ready
-    Serial.println("[MAIN] Setup done. UDP cmd server on port 20008.");
-    Serial.println("[MAIN] Press BOOT button or send 'selftest' via UDP to start self-test.");
 }
 
 // ── Loop ────────────────────────────────────────────────────────────
@@ -355,21 +347,14 @@ void loop() {
         wasConn = nowConn;
     }
 
-    // 8. Heartbeat (10s)
-    if (now - lastBeat >= 10000) {
+    // 8. CNDE data print (500ms)
+    if (now - lastBeat >= 500) {
         lastBeat = now;
         const RobotStateData& rs = s_cnde.getState();
         if (rs.valid) {
-            Serial.printf("[MAIN] up %lus heap %u J:%.1f,%.1f,%.1f,%.1f,%.1f,%.1f st:%d\n",
-                          now / 1000, ESP.getFreeHeap(),
+            Serial.printf("J1:%.1f J2:%.1f J3:%.1f J4:%.1f J5:%.1f J6:%.1f st:%d\n",
                           rs.jointPos[0], rs.jointPos[1], rs.jointPos[2],
                           rs.jointPos[3], rs.jointPos[4], rs.jointPos[5],
-                          stState);
-        } else {
-            Serial.printf("[MAIN] up %lus heap %u WiFi:%s CNDE:%s st:%d\n",
-                          now / 1000, ESP.getFreeHeap(),
-                          wifiMgrConnected() ? "OK" : "---",
-                          s_cnde.isConnected() ? "OK" : "---",
                           stState);
         }
     }
