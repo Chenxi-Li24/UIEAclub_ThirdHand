@@ -54,7 +54,7 @@ int FairinoUDPClient::sendCommand(int cmdID, const String& content) {
         }
         _udp.write((const uint8_t*)frame.c_str(), frame.length());
         if (_udp.endPacket()) {
-            Serial.printf("[FR-UDP] SEND count=%d cmdID=%d\n", _count-1, cmdID);
+            // Serial.printf("[FR-UDP] SEND count=%d cmdID=%d\n", _count-1, cmdID);
             return FR_OK;
         }
         // endPacket failed — likely TX buffer full, wait and retry

@@ -43,6 +43,7 @@ private:
     unsigned long _lastConnect = 0;
     unsigned long _lastRecv = 0;
     uint8_t _sendCount = 0;
+    uint32_t _frameCount = 0;
     RobotStateData _state = {};
 
     bool sendFrame(uint8_t type, const uint8_t* data, uint16_t len);
