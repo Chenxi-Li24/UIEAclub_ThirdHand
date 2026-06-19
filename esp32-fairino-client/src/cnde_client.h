@@ -52,3 +52,6 @@ private:
     void parseStateData(const uint8_t* data, uint16_t len);
     int recvFrame(uint8_t* buf, int maxLen);
 };
+
+// Global instance (defined in main.cpp)
+extern CNDEClient g_cnde;

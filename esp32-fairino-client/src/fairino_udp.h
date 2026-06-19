@@ -59,3 +59,6 @@ private:
     bool     _ready = false;
     int      _count = 0;    // frame sequence counter
 };
+
+// Global instance (defined in main.cpp)
+extern FairinoUDPClient g_fairino;

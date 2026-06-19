@@ -1,49 +1,43 @@
-// WiFi Manager — state machine, auto-connect, static IP
+// Robot WiFi Manager — deskpet-based state machine + static IP support
 #include "wifi_manager.h"
+#include "stats.h"
 #include <WiFi.h>
-#include <esp_wifi.h>
 
-// ── Credential storage (in-memory, no NVS) ──────────────────────────
-static char _wifiSsid[64]  = {0};
-static char _wifiPass[128] = {0};
-
-static void wifiCredSave(const char* ssid, const char* pass) {
-    strncpy(_wifiSsid, ssid, sizeof(_wifiSsid)-1);
-    strncpy(_wifiPass, pass, sizeof(_wifiPass)-1);
-}
-static bool wifiCredHas()           { return _wifiSsid[0] != 0; }
-static const char* wifiCredSsid()   { return _wifiSsid; }
-
-static WifiMgrState  s_state        = WM_IDLE;
-static uint32_t      s_connectStart = 0;
-static uint8_t       s_retryCount   = 0;
-static const uint8_t MAX_RETRIES    = 3;
+static WifiMgrState s_state = WM_IDLE;
+static int8_t s_curProfile = -1;
+static uint32_t s_connectStart = 0;
 static const uint32_t CONNECT_TIMEOUT_MS = 15000;
-static const uint32_t FAIL_COOLDOWN_MS   = 30000;
+static const uint32_t PROFILE_COOLDOWN_MS = 5000;
 
 static String s_localIP;
-static int    s_rssi = 0;
-static bool   s_connected = false;
-static bool   s_staticIP = false;
+static int s_rssi = 0;
+static bool s_connected = false;
+
+// Static IP state
+static bool s_staticIP = false;
 static IPAddress s_staticAddr, s_staticGw, s_staticMask;
 
 static void onWifiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
   switch (event) {
     case ARDUINO_EVENT_WIFI_STA_CONNECTED:
-      Serial.printf("[WiFi] STA connected to %s\n",
-        (const char*)info.wifi_sta_connected.ssid);
+      Serial.printf("[WiFi] STA connected to %s\n", (const char*)info.wifi_sta_connected.ssid);
       break;
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-      s_localIP  = IPAddress(info.got_ip.ip_info.ip.addr).toString();
-      s_rssi     = WiFi.RSSI();
+      s_localIP = IPAddress(info.got_ip.ip_info.ip.addr).toString();
+      s_rssi = WiFi.RSSI();
       s_connected = true;
-      s_state    = WM_OK;
-      s_retryCount = 0;
-      Serial.printf("[WiFi] OK  IP: %s  RSSI: %d\n", s_localIP.c_str(), s_rssi);
+      s_state = WM_OK;
+      if (s_curProfile > 0) {
+        String curSsid = WiFi.SSID();
+        wifiCredAddTop(curSsid.c_str(), wifiCredPass(s_curProfile));
+        s_curProfile = 0;
+      }
+      Serial.printf("[WiFi] OK  IP: %s  RSSI: %d  Static:%s\n",
+                    s_localIP.c_str(), s_rssi, s_staticIP ? "yes" : "no");
       break;
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
       s_connected = false;
-      s_localIP   = "";
+      s_localIP = "";
       if (s_state == WM_OK) {
         s_state = WM_AUTO_CONNECT;
         s_connectStart = millis();
@@ -55,8 +49,20 @@ static void onWifiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
 }
 
 void wifiMgrInit() {
+  wifiCredLoad();
   WiFi.mode(WIFI_STA);
   WiFi.onEvent(onWifiEvent);
+  if (wifiCredHas()) {
+    s_curProfile = 0;
+    s_state = WM_AUTO_CONNECT;
+    s_connectStart = millis();
+    Serial.printf("[WiFi] Auto-connect profile 1/%d: '%s'\n", wifiCredCount(), wifiCredSsid(0));
+    if (s_staticIP) WiFi.config(s_staticAddr, s_staticGw, s_staticMask);
+    WiFi.begin(wifiCredSsid(0), wifiCredPass(0));
+  } else {
+    Serial.println("[WiFi] No saved credentials — idle");
+    s_state = WM_IDLE;
+  }
 }
 
 void wifiMgrTick() {
@@ -66,29 +72,28 @@ void wifiMgrTick() {
     case WM_CONNECTING:
       if (s_connected) break;
       if (now - s_connectStart > CONNECT_TIMEOUT_MS) {
-        s_state  = WM_FAIL;
+        s_state = WM_FAIL;
         s_connected = false;
-        s_retryCount++;
-        Serial.printf("[WiFi] Connect timeout (%d/%d)\n", s_retryCount, MAX_RETRIES);
+        Serial.printf("[WiFi] Timeout connecting to '%s'\n",
+                      s_curProfile >= 0 ? wifiCredSsid(s_curProfile) : "?");
         s_connectStart = now;
         WiFi.disconnect();
       }
       break;
     case WM_FAIL:
-      if (now - s_connectStart > FAIL_COOLDOWN_MS) {
-        if (s_retryCount < MAX_RETRIES && wifiCredHas()) {
-          Serial.printf("[WiFi] Retry %d/%d (%s)...\n", s_retryCount + 1, MAX_RETRIES,
-                        s_staticIP ? "static" : "DHCP");
+      if (now - s_connectStart > PROFILE_COOLDOWN_MS) {
+        if (s_curProfile >= 0 && s_curProfile + 1 < wifiCredCount()) {
+          s_curProfile++;
           s_state = WM_AUTO_CONNECT;
           s_connectStart = now;
-          if (s_staticIP) {
-            WiFi.config(s_staticAddr, s_staticGw, s_staticMask);
-          }
-          WiFi.begin(_wifiSsid, _wifiPass);
+          Serial.printf("[WiFi] Try profile %d/%d: '%s'\n", s_curProfile + 1, wifiCredCount(),
+                        wifiCredSsid(s_curProfile));
+          if (s_staticIP) WiFi.config(s_staticAddr, s_staticGw, s_staticMask);
+          WiFi.begin(wifiCredSsid(s_curProfile), wifiCredPass(s_curProfile));
         } else {
-          Serial.println("[WiFi] All attempts exhausted");
+          Serial.println("[WiFi] All profiles exhausted");
           s_state = WM_IDLE;
-          s_retryCount = 0;
+          s_curProfile = -1;
         }
       }
       break;
@@ -97,25 +102,25 @@ void wifiMgrTick() {
 }
 
 void wifiMgrConnect(const char* ssid, const char* pass) {
-  wifiCredSave(ssid, pass);
+  wifiCredAddTop(ssid, pass);
   s_staticIP = false;
+  s_curProfile = 0;
   s_state = WM_CONNECTING;
   s_connectStart = millis();
-  s_retryCount = 0;
   Serial.printf("[WiFi] Connecting (DHCP) to '%s'...\n", ssid);
   WiFi.begin(ssid, pass);
 }
 
 void wifiMgrConnectStatic(const char* ssid, const char* pass,
                           const char* ip, const char* gateway, const char* subnet) {
-  wifiCredSave(ssid, pass);
+  wifiCredAddTop(ssid, pass);
   s_staticAddr.fromString(ip);
   s_staticGw.fromString(gateway);
   s_staticMask.fromString(subnet);
   s_staticIP = true;
+  s_curProfile = 0;
   s_state = WM_CONNECTING;
   s_connectStart = millis();
-  s_retryCount = 0;
   Serial.printf("[WiFi] Connecting (STATIC %s) to '%s'...\n", ip, ssid);
   WiFi.config(s_staticAddr, s_staticGw, s_staticMask);
   WiFi.begin(ssid, pass);
@@ -132,19 +137,18 @@ void wifiMgrReconnectStatic(const char* ip, const char* gateway, const char* sub
   s_staticIP = true;
   s_state = WM_CONNECTING;
   s_connectStart = millis();
-  s_retryCount = 0;
-  Serial.printf("[WiFi] Reconnecting (STATIC %s) to '%s'...\n", ip, wifiCredSsid());
+  Serial.printf("[WiFi] Reconnecting (STATIC %s) to '%s'...\n", ip, wifiCredSsid(0));
   WiFi.config(s_staticAddr, s_staticGw, s_staticMask);
-  WiFi.begin(_wifiSsid, _wifiPass);
+  WiFi.begin(wifiCredSsid(0), wifiCredPass(0));
 }
 
 void wifiMgrDisconnect() {
   WiFi.disconnect();
-  s_state      = WM_IDLE;
-  s_connected   = false;
-  s_localIP     = "";
-  s_retryCount  = 0;
-  s_staticIP    = false;
+  s_state = WM_IDLE;
+  s_connected = false;
+  s_localIP = "";
+  s_curProfile = -1;
+  s_staticIP = false;
   Serial.println("[WiFi] Disconnected by user");
 }
 
@@ -161,7 +165,7 @@ static void scanTask(void* param) {
     String ssid = WiFi.SSID(i);
     for (size_t j = 0; j < ssid.length(); j++) {
       char c = ssid[j];
-      if (c == 0x22) { json += (char)0x5C; } // escape double-quote
+      if (c == 0x22) { json += (char)0x5C; }
       json += c;
     }
     json += "\",\"rssi\":";
@@ -184,8 +188,8 @@ void wifiMgrScan(std::function<void(String json)> callback) {
   xTaskCreatePinnedToCore(scanTask, "wifiscan", 4096, ctx, 1, NULL, 0);
 }
 
-WifiMgrState wifiMgrState()    { return s_state; }
-String       wifiMgrLocalIP()  { return s_localIP; }
-int          wifiMgrRssi()     { return s_rssi; }
-bool         wifiMgrConnected() { return s_connected; }
-bool         wifiMgrIsStatic()  { return s_staticIP; }
+WifiMgrState wifiMgrState()      { return s_state; }
+String       wifiMgrLocalIP()    { return s_connected ? s_localIP : ""; }
+int          wifiMgrRssi()       { return s_rssi; }
+bool         wifiMgrConnected()  { return s_connected; }
+bool         wifiMgrIsStatic()   { return s_staticIP; }
