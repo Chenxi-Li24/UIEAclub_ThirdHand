@@ -1,11 +1,11 @@
-# PlatformIO build artifacts
+# PlatformIO build
 .pio/
-.vscode/
+build/
 
-# SDK archives
-fairino-cpp-sdk-master.zip
-fairino-cpp-sdk-master/
+# Archives
+*.zip
+*.7z
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db
