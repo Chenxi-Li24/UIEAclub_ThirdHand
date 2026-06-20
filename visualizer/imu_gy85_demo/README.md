@@ -55,7 +55,7 @@ ax, ay, az, gx_cal, gy_cal, gz_cal, mx, my, mz
 | imu_cube_visualizer_stable.py | Stable cube tilt visualizer |
 | imu_logger.py | Serial logger for saving IMU data to CSV |
 | requirements.txt | Python dependencies |
-| sample_imu_log.csv | Example static test data |
+| imu_log.csv | Example static test data |
 
 ## How to run
 
