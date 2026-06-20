@@ -11,11 +11,27 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <lvgl.h>
 
+#include "pins_config.h"
 #include "config.h"
 #include "wifi_manager.h"
 #include "fairino_udp.h"
 #include "cnde_client.h"
+
+#if ENABLE_DISPLAY
+#include "hw/display.h"
+#endif
+#if ENABLE_TOUCH
+#include "hw/input.h"
+#endif
+
+#include "ui/ui_core.h"
+#include "ui/ui_dashboard.h"
+#include "ui/ui_control.h"
+#include "ui/ui_system.h"
+#include "ui/ui_wifi.h"
+#include "ui/ui_about.h"
 
 // ── UDP Command Server ──────────────────────────────────────────────
 #define CMD_SERVER_PORT  20008
@@ -24,14 +40,15 @@
 static WiFiUDP s_cmdServer;
 static IPAddress s_proxyIP;
 static uint16_t s_proxyPort = 0;
+static bool s_lvglReady = false;
 
 // ── LED (WS2812) ────────────────────────────────────────────────────
 #include <Adafruit_NeoPixel.h>
 static Adafruit_NeoPixel s_led(1, PIN_WS2812, NEO_RGB + NEO_KHZ800);
 
 // ── Fairino Client ──────────────────────────────────────────────────
-static FairinoUDPClient s_fairino;
-static CNDEClient s_cnde;
+FairinoUDPClient g_fairino;
+CNDEClient g_cnde;
 
 // ── Self-test state machine ─────────────────────────────────────────
 enum SelfTestState { ST_IDLE, ST_MOVE, ST_SETTLE, ST_DONE, ST_ERROR };
@@ -93,7 +110,7 @@ static void cmdRespondF(const char* fmt, ...) {
 static void selfTestSendTarget() {
     if (stSegment < 0 || stSegment >= SELF_TEST_COUNT) return;
     const float* t = SELF_TEST_POS[stSegment];
-    s_fairino.servoJ(t[0], t[1], t[2], t[3], t[4], t[5],
+    g_fairino.servoJ(t[0], t[1], t[2], t[3], t[4], t[5],
                      SELF_TEST_ACC, SELF_TEST_VEL, SELF_TEST_CMDT, 0, 0);
 }
 
@@ -120,7 +137,7 @@ static void selfTestTick() {
         if (now - stSettleStart >= (unsigned long)SELF_TEST_SETTLE_MS) {
             stSegment++;
             if (stSegment >= SELF_TEST_COUNT) {
-                s_fairino.servoMoveEnd();
+                g_fairino.servoMoveEnd();
                 stState = ST_DONE;
                 ledSet(0, 0, 0, 0);
                 return;
@@ -137,7 +154,7 @@ static void selfTestTick() {
     // Overall timeout
     if (stState == ST_MOVE || stState == ST_SETTLE) {
         if (now - stStartTime > SELF_TEST_TIMEOUT) {
-            s_fairino.servoMoveEnd();
+            g_fairino.servoMoveEnd();
             stState = ST_ERROR;
             Serial.println("[SELF-TEST] TIMEOUT");
             ledSet(255, 0, 0, 64);
@@ -146,7 +163,7 @@ static void selfTestTick() {
 }
 
 // ── Start self-test ─────────────────────────────────────────────────
-static void selfTestStart() {
+void selfTestStart() {
     if (stState == ST_MOVE || stState == ST_SETTLE) {
         Serial.println("[SELF-TEST] Already running");
         return;
@@ -157,7 +174,7 @@ static void selfTestStart() {
     }
     Serial.printf("[SELF-TEST] Starting %d positions\n", SELF_TEST_COUNT);
 
-    s_fairino.servoMoveStart();
+    g_fairino.servoMoveStart();
     delay(50);
 
     stSegment = 0;
@@ -175,7 +192,7 @@ static void processCmd(const String& line) {
     }
 
     if (line == "status") {
-        const RobotStateData& rs = s_cnde.getState();
+        const RobotStateData& rs = g_cnde.getState();
         if (rs.valid) {
             cmdRespondF("J1:%.1f J2:%.1f J3:%.1f J4:%.1f J5:%.1f J6:%.1f robot:%d prog:%d err:%d/%d\r\n",
                         rs.jointPos[0], rs.jointPos[1], rs.jointPos[2],
@@ -184,7 +201,7 @@ static void processCmd(const String& line) {
         } else {
             cmdRespondF("WiFi:%s CNDE:%s SelfTest:%d\r\n",
                         wifiMgrConnected() ? "OK" : "---",
-                        s_cnde.isConnected() ? "OK" : "---",
+                        g_cnde.isConnected() ? "OK" : "---",
                         stState);
         }
         return;
@@ -193,7 +210,7 @@ static void processCmd(const String& line) {
     if (line == "test") {
         if (!wifiMgrConnected()) { cmdRespond("ERR: no WiFi\r\n"); return; }
         ledSet(255, 255, 0, 32);
-        s_fairino.servoTimingTest();
+        g_fairino.servoTimingTest();
         cmdRespond("OK: timing test sent\r\n");
         return;
     }
@@ -206,13 +223,13 @@ static void processCmd(const String& line) {
 
     if (line == "servo start") {
         if (!wifiMgrConnected()) { cmdRespond("ERR: no WiFi\r\n"); return; }
-        s_fairino.servoMoveStart();
+        g_fairino.servoMoveStart();
         cmdRespond("OK: servo start\r\n");
         return;
     }
 
     if (line == "servo end") {
-        s_fairino.servoMoveEnd();
+        g_fairino.servoMoveEnd();
         cmdRespond("OK: servo end\r\n");
         return;
     }
@@ -228,7 +245,7 @@ static void processCmd(const String& line) {
             return;
         }
 
-        int r = s_fairino.servoJ(joints[0], joints[1], joints[2], joints[3], joints[4], joints[5],
+        int r = g_fairino.servoJ(joints[0], joints[1], joints[2], joints[3], joints[4], joints[5],
                                   SELF_TEST_ACC, SELF_TEST_VEL, SELF_TEST_CMDT, 0, 0);
         if (r != FR_OK) {
             cmdRespondF("ERR: servoJ failed %d\r\n", r);
@@ -240,9 +257,19 @@ static void processCmd(const String& line) {
         return;
     }
 
-    cmdRespondF("Unknown: '%s'\r\n", line.c_str());
+        cmdRespondF("Unknown: [%s]\r\n", line.c_str());
 }
 
+
+// --- LVGL periodic UI refresh timer callback -------------------------
+static void uiRefreshTimer(lv_timer_t *timer) {
+    ui_refresh_all();
+}
+
+// --- LVGL WiFi scan poll timer callback ------------------------------
+static void uiWifiScanTimer(lv_timer_t *timer) {
+    ui_wifi_setup_poll_scan();
+}
 // ── Setup ───────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200);
@@ -258,21 +285,50 @@ void setup() {
     s_led.begin();
     ledSet(255, 0, 0, 32);   // Red = booting
 
+    // --- LVGL Display & Touch ---
+#if ENABLE_DISPLAY
+    if (hwDisplayInit()) {
+        s_lvglReady = hwDisplayInitLVGL();
+        if (s_lvglReady) {
+            Serial.println("[MAIN] LVGL display OK");
+#if ENABLE_TOUCH
+            hwInputInit();
+#endif
+            ui_core_init();
+            lv_timer_create(uiRefreshTimer, 200, NULL);
+            lv_timer_create(uiWifiScanTimer, 500, NULL);
+            Serial.println("[MAIN] LVGL UI initialized");
+        }
+    } else {
+        Serial.println("[MAIN] Display init FAILED - running headless");
+    }
+#else
+    Serial.println("[MAIN] DISPLAY disabled - running headless");
+#endif
+
     // WiFi
     wifiMgrInit();
     wifiMgrConnectStatic(WIFI_SSID, WIFI_PASS, STATIC_IP, STATIC_GW, STATIC_MASK);
 
     // Fairino UDP client
-    s_fairino.begin();
-    s_fairino.setTarget(ROBOT_IP, ROBOT_UDP_PORT);
+    g_fairino.begin();
+    g_fairino.setTarget(ROBOT_IP, ROBOT_UDP_PORT);
 
     // CNDE state feedback client
-    s_cnde.begin(ROBOT_IP, 20005);
+    g_cnde.begin(ROBOT_IP, 20005);
 }
 
 // ── Loop ────────────────────────────────────────────────────────────
 void loop() {
     static uint32_t lastLed   = 0;
+
+    // --- 0. LVGL tick handler ---
+    if (s_lvglReady) {
+#if ENABLE_TOUCH
+        hwInputUpdate();
+#endif
+        lv_timer_handler();
+    }
     static uint32_t lastBeat  = 0;
     static bool     wasConn   = false;
     static bool     cmdBound  = false;
@@ -283,7 +339,7 @@ void loop() {
     wifiMgrTick();
 
     // 1b. CNDE state feedback
-    if (wifiMgrConnected()) s_cnde.tick();
+    if (wifiMgrConnected()) g_cnde.tick();
 
     // 2. Bind UDP cmd server once WiFi is up
     if (wifiMgrConnected() && !cmdBound) {
@@ -312,7 +368,7 @@ void loop() {
 
     // 3b. Process incoming Serial commands (from web proxy)
     if (Serial.available() > 0) {
-        String serLine = Serial.readStringUntil('\n');
+        String serLine = Serial.readStringUntil(0x0A);
         serLine.trim();
         if (serLine.length() > 0) {
             Serial.printf("[SERIAL] cmd: %s\n", serLine.c_str());
@@ -373,7 +429,7 @@ void loop() {
     // 8. CNDE data print + UDP broadcast (500ms)
     if (now - lastBeat >= 500) {
         lastBeat = now;
-        const RobotStateData& rs = s_cnde.getState();
+        const RobotStateData& rs = g_cnde.getState();
         if (rs.valid) {
             Serial.printf("J1:%.1f J2:%.1f J3:%.1f J4:%.1f J5:%.1f J6:%.1f st:%d\n",
                           rs.jointPos[0], rs.jointPos[1], rs.jointPos[2],
