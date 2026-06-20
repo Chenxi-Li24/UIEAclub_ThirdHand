@@ -18,6 +18,10 @@
 #define SELF_TEST_SETTLE_MS 5000    // 每个位置停留时间(ms)
 #define SELF_TEST_TIMEOUT   300000  // 5min overall timeout
 
+// ── Display & Touch ──────────────────────────────────────────────────
+#define ENABLE_DISPLAY  1   // JD9365DA MIPI DSI 800×1280
+#define ENABLE_TOUCH    1   // GSL3680 I2C capacitive touch
+
 // ── LED ──────────────────────────────────────────────────────────────
 #define PIN_WS2812      26
 #define LED_BUILTIN      48
