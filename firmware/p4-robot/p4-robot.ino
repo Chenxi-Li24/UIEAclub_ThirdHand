@@ -18,6 +18,7 @@
 #include "wifi_manager.h"
 #include "fairino_udp.h"
 #include "cnde_client.h"
+#include "cmd_queue.h"
 
 #if ENABLE_DISPLAY
 #include "hw/display.h"
@@ -49,6 +50,11 @@ static Adafruit_NeoPixel s_led(1, PIN_WS2812, NEO_RGB + NEO_KHZ800);
 // ── Fairino Client ──────────────────────────────────────────────────
 FairinoUDPClient g_fairino;
 CNDEClient g_cnde;
+
+// ── Command Queue + Heartbeat + State Machine ────────────────────────
+CmdQueue          g_cmdQueue;
+HeartbeatMonitor  g_heartbeat(2000);  // 2s timeout
+RobotStateMachine g_state;
 
 // ── Self-test state machine ─────────────────────────────────────────
 enum SelfTestState { ST_IDLE, ST_MOVE, ST_SETTLE, ST_DONE, ST_ERROR };
@@ -114,51 +120,65 @@ static void selfTestSendTarget() {
                      SELF_TEST_ACC, SELF_TEST_VEL, SELF_TEST_CMDT, 0, 0);
 }
 
-// ── Self-test state machine (called from loop) ──────────────────────
+// ── Self-test state machine (non-blocking, called from loop) ────────
+static unsigned long stLastSend = 0;
+
 static void selfTestTick() {
+    // Abort self-test on E-STOP
+    if (stState == ST_MOVE || stState == ST_SETTLE) {
+        if (g_state.state() == RSTATE_ESTOP) {
+            g_fairino.servoMoveEnd();
+            stState = ST_ERROR;
+            Serial.println("[SELF-TEST] Aborted by E-STOP");
+            ledSet(255, 0, 0, 64);
+            return;
+        }
+    }
+
     unsigned long now = millis();
 
     switch (stState) {
     case ST_IDLE:
+    case ST_DONE:
+    case ST_ERROR:
         return;
 
     case ST_MOVE:
-        // Send ServoJ to target, then enter settle
-        selfTestSendTarget();
-        delay((int)(SELF_TEST_CMDT * 1000));
-        stState = ST_SETTLE;
-        stSettleStart = now;
+        // Send ServoJ at interval, then switch to settle after one cycle
+        if (now - stLastSend >= (unsigned long)(SELF_TEST_CMDT * 1000)) {
+            selfTestSendTarget();
+            stLastSend = now;
+            stState = ST_SETTLE;
+            stSettleStart = now;
+        }
         break;
 
     case ST_SETTLE:
-        // Keep sending target during settle so robot arrives
-        selfTestSendTarget();
-        delay((int)(SELF_TEST_CMDT * 1000));
+        // Keep sending target periodically during settle so robot arrives
+        if (now - stLastSend >= (unsigned long)(SELF_TEST_CMDT * 1000)) {
+            selfTestSendTarget();
+            stLastSend = now;
+        }
         if (now - stSettleStart >= (unsigned long)SELF_TEST_SETTLE_MS) {
             stSegment++;
             if (stSegment >= SELF_TEST_COUNT) {
                 g_fairino.servoMoveEnd();
                 stState = ST_DONE;
                 ledSet(0, 0, 0, 0);
+                Serial.println("[SELF-TEST] Done");
                 return;
             }
             stState = ST_MOVE;
         }
         break;
-
-    case ST_DONE:
-    case ST_ERROR:
-        break;
     }
 
     // Overall timeout
-    if (stState == ST_MOVE || stState == ST_SETTLE) {
-        if (now - stStartTime > SELF_TEST_TIMEOUT) {
-            g_fairino.servoMoveEnd();
-            stState = ST_ERROR;
-            Serial.println("[SELF-TEST] TIMEOUT");
-            ledSet(255, 0, 0, 64);
-        }
+    if (now - stStartTime > SELF_TEST_TIMEOUT) {
+        g_fairino.servoMoveEnd();
+        stState = ST_ERROR;
+        Serial.println("[SELF-TEST] TIMEOUT");
+        ledSet(255, 0, 0, 64);
     }
 }
 
@@ -180,19 +200,23 @@ void selfTestStart() {
     stSegment = 0;
     stState = ST_MOVE;
     stStartTime = millis();
+    stLastSend = 0;  // send first target immediately
     ledSet(255, 255, 0, 64);
     Serial.println("[SELF-TEST] ServoMoveStart sent");
 }
 
 // ── Command processor ───────────────────────────────────────────────
 static void processCmd(const String& line) {
+    // ── Immediate commands (not queued) ──────────────────────────
     if (line == "help") {
-        cmdRespond("help | status | test | selftest | servo start | servo end | servo j1 <j1-j6> [delta] [dur]\r\n");
+        cmdRespond("help | status | test | selftest | servo start | servo end | servo j1 <j1-j6> | estop | reset | heartbeat\r\n");
         return;
     }
 
     if (line == "status") {
         const RobotStateData& rs = g_cnde.getState();
+        cmdRespondF("state:%s hb:%lu ",
+                    g_state.stateName(), g_heartbeat.age());
         if (rs.valid) {
             cmdRespondF("J1:%.1f J2:%.1f J3:%.1f J4:%.1f J5:%.1f J6:%.1f robot:%d prog:%d err:%d/%d\r\n",
                         rs.jointPos[0], rs.jointPos[1], rs.jointPos[2],
@@ -207,6 +231,39 @@ static void processCmd(const String& line) {
         return;
     }
 
+    // heartbeat — feed heartbeat monitor
+    if (line == "heartbeat") {
+        g_heartbeat.feed();
+        cmdRespond("OK: heartbeat\r\n");
+        return;
+    }
+
+    // ── E-STOP: IMMEDIATE — bypass queue, official SDK StopMotion ─
+    if (line == "estop") {
+        g_cmdQueue.clear();                   // Discard all pending commands
+        g_fairino.stopMotion();               // Official SDK: cmdID=102 "STOP" — immediate brake
+        g_fairino.servoMoveEnd();             // Also end servo streaming (cmdID=690)
+        g_state.force(RSTATE_ESTOP);          // State → E-STOP NOW
+        ledSet(255, 0, 0, 64);               // Red LED
+        cmdRespond("OK: E-STOP active (immediate, queue cleared)\r\n");
+        Serial.println("[MAIN] E-STOP triggered — queue cleared, stopMotion+servoEnd sent");
+        return;
+    }
+
+    // ── Queued commands ──────────────────────────────────────────
+
+    // reset — reset ESTOP/ERROR/LOCKED → IDLE
+    if (line == "reset") {
+        if (g_state.state() == RSTATE_ESTOP || g_state.state() == RSTATE_ERROR || g_state.state() == RSTATE_LOCKED) {
+            g_state.transition(RSTATE_IDLE);
+            cmdRespondF("OK: reset → %s\r\n", g_state.stateName());
+        } else {
+            cmdRespondF("ERR: can't reset from %s\r\n", g_state.stateName());
+        }
+        return;
+    }
+
+    // test (timing test)
     if (line == "test") {
         if (!wifiMgrConnected()) { cmdRespond("ERR: no WiFi\r\n"); return; }
         ledSet(255, 255, 0, 32);
@@ -215,27 +272,40 @@ static void processCmd(const String& line) {
         return;
     }
 
+    // selftest
     if (line == "selftest") {
         selfTestStart();
         cmdRespond("OK: self-test started\r\n");
         return;
     }
 
+    // servo start — enqueue
     if (line == "servo start") {
+        if (!g_state.canMove()) {
+            cmdRespondF("ERR: can't move in state %s\r\n", g_state.stateName());
+            return;
+        }
         if (!wifiMgrConnected()) { cmdRespond("ERR: no WiFi\r\n"); return; }
-        g_fairino.servoMoveStart();
-        cmdRespond("OK: servo start\r\n");
+        CmdEntry e; e.type = CMD_SERVO_START; e.ts = millis();
+        g_cmdQueue.enqueue(e);
+        cmdRespond("OK: servo start queued\r\n");
         return;
     }
 
+    // servo end — enqueue
     if (line == "servo end") {
-        g_fairino.servoMoveEnd();
-        cmdRespond("OK: servo end\r\n");
+        CmdEntry e; e.type = CMD_SERVO_END; e.ts = millis();
+        g_cmdQueue.enqueue(e);
+        cmdRespond("OK: servo end queued\r\n");
         return;
     }
 
-    // servo j1 <j1> <j2> <j3> <j4> <j5> <j6>
+    // servo j1 <j1> <j2> <j3> <j4> <j5> <j6> — enqueue
     if (line.startsWith("servo j1 ")) {
+        if (!g_state.canMove()) {
+            cmdRespondF("ERR: can't move in state %s\r\n", g_state.stateName());
+            return;
+        }
         if (!wifiMgrConnected()) { cmdRespond("ERR: no WiFi\r\n"); return; }
         float joints[6];
         int n = sscanf(line.c_str(), "servo j1 %f %f %f %f %f %f",
@@ -244,20 +314,14 @@ static void processCmd(const String& line) {
             cmdRespond("Usage: servo j1 <j1> <j2> <j3> <j4> <j5> <j6>\r\n");
             return;
         }
-
-        int r = g_fairino.servoJ(joints[0], joints[1], joints[2], joints[3], joints[4], joints[5],
-                                  SELF_TEST_ACC, SELF_TEST_VEL, SELF_TEST_CMDT, 0, 0);
-        if (r != FR_OK) {
-            cmdRespondF("ERR: servoJ failed %d\r\n", r);
-        } else {
-            cmdRespondF("OK: servo j1 → %.1f %.1f %.1f %.1f %.1f %.1f\r\n",
-                        joints[0], joints[1], joints[2], joints[3], joints[4], joints[5]);
-        }
+        CmdEntry e; e.type = CMD_SERVO_MOVE; e.ts = millis();
+        memcpy(e.joints, joints, sizeof(joints));
+        g_cmdQueue.enqueue(e);
         ledSet(0, 255, 0, 32);
-        return;
+        return;  // response sent after execution
     }
 
-        cmdRespondF("Unknown: [%s]\r\n", line.c_str());
+    cmdRespondF("Unknown: [%s]\r\n", line.c_str());
 }
 
 
@@ -332,7 +396,6 @@ void loop() {
     static uint32_t lastBeat  = 0;
     static bool     wasConn   = false;
     static bool     cmdBound  = false;
-    static bool     bootArmed = true;
     uint32_t now = millis();
 
     // 1. WiFi state machine
@@ -348,8 +411,8 @@ void loop() {
         Serial.printf("[MAIN] UDP cmd server listening on port %d\n", CMD_SERVER_PORT);
     }
 
-    // 3. Process incoming UDP commands (only when self-test not running)
-    if (cmdBound && stState != ST_MOVE) {
+    // 3. Process incoming UDP commands
+    if (cmdBound) {
         int pktSize = s_cmdServer.parsePacket();
         if (pktSize > 0 && pktSize < CMD_BUF_SIZE) {
             s_proxyIP = s_cmdServer.remoteIP();
@@ -376,16 +439,71 @@ void loop() {
         }
     }
 
-    // 4. BOOT button → start self-test
-    if (digitalRead(BOOT_BUTTON) == LOW) {
-        if (bootArmed) {
-            bootArmed = false;
-            selfTestStart();
+    // 4. Process queued commands (estop priority first)
+    {
+        CmdEntry e;
+        if (g_cmdQueue.dequeue(e)) {
+            switch (e.type) {
+            case CMD_ESTOP: {
+                g_cmdQueue.clear();                   // Discard remaining queued commands
+                g_fairino.stopMotion();               // Official SDK: cmdID=102 "STOP"
+                g_fairino.servoMoveEnd();             // Also end servo streaming
+                g_state.force(RSTATE_ESTOP);
+                cmdRespondF("OK: E-STOP active (state %s)\r\n", g_state.stateName());
+                ledSet(255, 0, 0, 64);
+                break;
+            }
+            case CMD_SERVO_MOVE: {
+                if (g_state.canMove()) {
+                    g_state.transition(RSTATE_MOVING);
+                    int r = g_fairino.servoJ(e.joints[0], e.joints[1], e.joints[2],
+                                              e.joints[3], e.joints[4], e.joints[5],
+                                              SELF_TEST_ACC, SELF_TEST_VEL, SELF_TEST_CMDT, 0, 0);
+                    if (r != FR_OK) {
+                        cmdRespondF("ERR: servoJ failed %d\r\n", r);
+                        g_state.transition(RSTATE_ERROR);
+                    } else {
+                        cmdRespondF("OK: servo j1 → %.1f %.1f %.1f %.1f %.1f %.1f\r\n",
+                                    e.joints[0], e.joints[1], e.joints[2],
+                                    e.joints[3], e.joints[4], e.joints[5]);
+                    }
+                }
+                break;
+            }
+            case CMD_SERVO_START: {
+                if (g_state.canMove()) {
+                    g_state.transition(RSTATE_MOVING);
+                    g_fairino.servoMoveStart();
+                    cmdRespond("OK: servo start\r\n");
+                }
+                break;
+            }
+            case CMD_SERVO_END: {
+                g_fairino.servoMoveEnd();
+                if (g_state.state() == RSTATE_MOVING) g_state.transition(RSTATE_IDLE);
+                cmdRespond("OK: servo end\r\n");
+                break;
+            }
+            default: break;
+            }
         }
-    } else {
-        bootArmed = true;
     }
 
+    // 4b. Heartbeat timeout → auto-estop (one-shot)
+    static bool hbTimedOut = false;
+    if (g_heartbeat.isTimeout() && !hbTimedOut) {
+        hbTimedOut = true;
+        g_cmdQueue.clear();                   // Discard pending commands
+        g_fairino.stopMotion();               // Official SDK: cmdID=102 "STOP"
+        g_fairino.servoMoveEnd();             // End servo streaming
+        g_state.force(RSTATE_ESTOP);
+        cmdRespond("ERR: heartbeat timeout → E-STOP\r\n");
+        ledSet(255, 0, 0, 64);
+        Serial.println("[MAIN] HEARTBEAT TIMEOUT — E-STOP!");
+    }
+    if (!g_heartbeat.isTimeout() && hbTimedOut) {
+        hbTimedOut = false;  // reset on next heartbeat
+    }
     // 5. Self-test tick
     selfTestTick();
 
@@ -431,17 +549,17 @@ void loop() {
         lastBeat = now;
         const RobotStateData& rs = g_cnde.getState();
         if (rs.valid) {
-            Serial.printf("J1:%.1f J2:%.1f J3:%.1f J4:%.1f J5:%.1f J6:%.1f st:%d\n",
+            Serial.printf("J1:%.1f J2:%.1f J3:%.1f J4:%.1f J5:%.1f J6:%.1f st:%s hb:%lu\n",
                           rs.jointPos[0], rs.jointPos[1], rs.jointPos[2],
                           rs.jointPos[3], rs.jointPos[4], rs.jointPos[5],
-                          stState);
-            // UDP broadcast to web proxy
+                          g_state.stateName(), g_heartbeat.age());
+            // UDP broadcast to web proxy (include state + heartbeat age)
             if (wifiMgrConnected() && cmdBound && s_proxyPort > 0) {
-                char buf[128];
-                snprintf(buf, sizeof(buf), "JOINTS:%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d\n",
+                char buf[192];
+                snprintf(buf, sizeof(buf), "JOINTS:%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d,%lu\n",
                          rs.jointPos[0], rs.jointPos[1], rs.jointPos[2],
                          rs.jointPos[3], rs.jointPos[4], rs.jointPos[5],
-                         stState);
+                         (int)g_state.state(), g_heartbeat.age());
                 s_cmdServer.beginPacket(s_proxyIP, s_proxyPort);
                 s_cmdServer.write((const uint8_t*)buf, strlen(buf));
                 s_cmdServer.endPacket();
