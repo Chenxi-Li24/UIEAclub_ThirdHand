@@ -1,10 +1,19 @@
-# PlatformIO build
+# PlatformIO / Arduino build
 .pio/
 build/
 
-# Archives
-*.zip
-*.7z
+# ESP-IDF build
+sdkconfig
+sdkconfig.old
+managed_components/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Node.js (web-control)
+web-control/server/node_modules/
 
 # OS
 .DS_Store

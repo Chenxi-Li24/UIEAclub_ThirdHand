@@ -86,15 +86,13 @@ void jd9365_lcd::begin()
 
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_dbi(mipi_dsi_bus, &dbi_config, &io_handle));
 
-    // 创建JD9365控制面板
-    // num_fbs=0: skip internal framebuffer alloc (PSRAM DMA cap bug in pre-compiled libs)
-    // LVGL provides the framebuffer in PSRAM; DSI uses DMA2D from user buffer directly
+    // 创建JD9365控制面板 (use official config: num_fbs=1 + DMA2D for stable refresh)
     esp_lcd_dpi_panel_config_t dpi_config = {
         .virtual_channel = 0,
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
         .dpi_clock_freq_mhz = 60,
         .pixel_format = MIPI_DPI_PX_FORMAT,
-        .num_fbs = 0,
+        .num_fbs = 1,
         .video_timing = {
             .h_size = 800,
             .v_size = 1280,
@@ -106,7 +104,7 @@ void jd9365_lcd::begin()
             .vsync_front_porch = 20,
         },
         .flags = {
-            .use_dma2d = false,  // Disabled: RGB565→RGB565 no conversion needed; avoids 4MB DMA2D alloc
+            .use_dma2d = true,
         },
     };
 

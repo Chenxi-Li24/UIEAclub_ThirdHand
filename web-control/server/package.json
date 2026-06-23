@@ -1,0 +1,14 @@
+{
+  "name": "thirdhand-web-control",
+  "version": "1.0.0",
+  "description": "ThirdHand Web Control Panel - Three.js visualization + ESP32 relay for Fairino FR5",
+  "main": "proxy.js",
+  "scripts": {
+    "start": "node proxy.js",
+    "dev": "node proxy.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "ws": "^8.18.0"
+  }
+}

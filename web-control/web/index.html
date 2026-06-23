@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ThirdHand - FR5 机械臂控制</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>ThirdHand <span>FR5 Web Control</span></h1>
+      <div id="status-bar">
+        <button id="btn-toggle-conn" class="btn-toggle-panel active" title="设备连接面板">设备连接</button>
+        <button id="btn-toggle-arm" class="btn-toggle-panel active" title="机械臂控制面板">机械臂控制</button>
+        <select id="theme-select">
+          <option value="dark">暗黑</option>
+          <option value="green">暗绿</option>
+          <option value="blue">暗蓝</option>
+          <option value="purple">暗紫</option>
+          <option value="orange">暗橙</option>
+          <option value="light">亮白</option>
+        </select>
+        <span class="status disconnected" id="ws-status">● 未连接</span>
+      </div>
+    </header>
+    <main>
+      <div id="viewport-section">
+        <div id="three-container"></div>
+      </div>
+      <div id="arm-panel"></div>
+    </main>
+    <div id="bottom-panel"></div>
+  </div>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./js/lib/three.module.js",
+      "three/addons/": "./js/lib/"
+    }
+  }
+  </script>
+  <script type="module">
+    // 设置全局 THREE 供 urdf-loader 使用
+    import * as THREE from 'three';
+    import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+    import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
+    const T = {};
+    for (const k of Object.getOwnPropertyNames(THREE)) T[k] = THREE[k];
+    T.STLLoader = STLLoader;
+    T.ColladaLoader = ColladaLoader;
+    window.THREE = T;
+    console.log('[boot] THREE global ready');
+    // 加载 urdf-loader
+    const s = document.createElement('script');
+    s.src = 'js/lib/URDFLoader.js';
+    s.onload = () => {
+      console.log('[boot] URDFLoader ready');
+      // 加载主模块
+      const m = document.createElement('script');
+      m.type = 'module';
+      m.src = 'js/main.js';
+      document.body.appendChild(m);
+    };
+    document.head.appendChild(s);
+  </script>
+</body>
+</html>

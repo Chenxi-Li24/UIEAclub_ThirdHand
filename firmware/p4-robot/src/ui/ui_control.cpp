@@ -1,10 +1,11 @@
-// ui_control.cpp - Tab 1: Robot Jog Control + Self-Test buttons
+// ui_control.cpp - Tab 1: Robot Jog Control + state-protected buttons
 #include <Arduino.h>
 #include "ui/ui_control.h"
 #include "ui/ui_core.h"
 #include "wifi_manager.h"
 #include "fairino_udp.h"
 #include "cnde_client.h"
+#include "cmd_queue.h"
 #include "config.h"
 
 static lv_obj_t *scr;
@@ -14,16 +15,30 @@ static float jogDelta = 5.0f;
 
 extern CNDEClient g_cnde;
 extern FairinoUDPClient g_fairino;
+extern CmdQueue g_cmdQueue;
+extern RobotStateMachine g_state;
 extern void selfTestStart();
+
+static void enqueueServoMove(const float* joints) {
+    if (!g_state.canMove()) {
+        Serial.printf("[UI-CTRL] can't move in state %s\n", g_state.stateName());
+        return;
+    }
+    CmdEntry e;
+    e.type = CMD_SERVO_MOVE;
+    e.ts = millis();
+    memcpy(e.joints, joints, sizeof(e.joints));
+    g_cmdQueue.enqueue(e);
+}
 
 static void jogJoint(int axis, float delta) {
     if (!wifiMgrConnected()) return;
+    if (!g_state.canMove()) return;
     const RobotStateData& rs = g_cnde.getState();
     float joints[6] = {0};
     if (rs.valid) for (int i = 0; i < 6; i++) joints[i] = rs.jointPos[i];
     joints[axis] += delta;
-    g_fairino.servoJ(joints[0], joints[1], joints[2], joints[3], joints[4], joints[5],
-                     SELF_TEST_ACC, SELF_TEST_VEL, SELF_TEST_CMDT, 0, 0);
+    enqueueServoMove(joints);
 }
 
 static void jogJ0_plus(lv_event_t* e)  { jogJoint(0,  jogDelta); }
@@ -39,13 +54,40 @@ static void jogJ4_minus(lv_event_t* e) { jogJoint(4, -jogDelta); }
 static void jogJ5_plus(lv_event_t* e)  { jogJoint(5,  jogDelta); }
 static void jogJ5_minus(lv_event_t* e) { jogJoint(5, -jogDelta); }
 
-static void onSelfTest(lv_event_t* e) { if (wifiMgrConnected()) selfTestStart(); }
-static void onServoStart(lv_event_t* e) { if (wifiMgrConnected()) g_fairino.servoMoveStart(); }
-static void onServoEnd(lv_event_t* e) { g_fairino.servoMoveEnd(); }
-static void onTimingTest(lv_event_t* e) { if (wifiMgrConnected()) g_fairino.servoTimingTest(); }
+static void onSelfTest(lv_event_t* e) {
+    if (wifiMgrConnected() && g_state.canMove()) selfTestStart();
+}
+
+static void onServoStart(lv_event_t* e) {
+    if (!wifiMgrConnected() || !g_state.canMove()) return;
+    CmdEntry ce; ce.type = CMD_SERVO_START; ce.ts = millis();
+    g_cmdQueue.enqueue(ce);
+}
+
+static void onServoEnd(lv_event_t* e) {
+    CmdEntry ce; ce.type = CMD_SERVO_END; ce.ts = millis();
+    g_cmdQueue.enqueue(ce);
+}
+
+static void onTimingTest(lv_event_t* e) {
+    if (wifiMgrConnected() && g_state.canMove()) g_fairino.servoTimingTest();
+}
 
 static void onDeltaUp(lv_event_t* e)   { if (jogDelta < 20.0f) jogDelta += 1.0f; }
 static void onDeltaDown(lv_event_t* e) { if (jogDelta > 1.0f) jogDelta -= 1.0f; }
+
+static void onReset(lv_event_t* e) {
+    if (g_state.state() == RSTATE_ESTOP || g_state.state() == RSTATE_ERROR || g_state.state() == RSTATE_LOCKED) {
+        g_state.transition(RSTATE_IDLE);
+        Serial.println("[UI-CTRL] Reset → IDLE");
+    }
+}
+
+static void onEstop(lv_event_t* e) {
+    CmdEntry ce; ce.type = CMD_ESTOP; ce.ts = millis();
+    g_cmdQueue.enqueue(ce);
+    Serial.println("[UI-CTRL] E-STOP button pressed");
+}
 
 static lv_event_cb_t JOG_CALLBACKS[6][2] = {
     {jogJ0_plus, jogJ0_minus},
@@ -152,6 +194,7 @@ lv_obj_t* ui_control_create(lv_obj_t* parent) {
     int btnW2 = 240; int btnH2 = 80;
     int bGap = 16;
 
+    // Row 1: Self-Test | E-STOP | Servo End
     lv_obj_t* btnST = lv_btn_create(scr);
     lv_obj_set_size(btnST, btnW2, btnH2);
     lv_obj_set_pos(btnST, startX, btnY);
@@ -164,17 +207,17 @@ lv_obj_t* ui_control_create(lv_obj_t* parent) {
     lv_obj_set_style_text_font(tST, UI_F24, 0);
     lv_obj_center(tST);
 
-    lv_obj_t* btnSS = lv_btn_create(scr);
-    lv_obj_set_size(btnSS, btnW2, btnH2);
-    lv_obj_set_pos(btnSS, startX + btnW2 + bGap, btnY);
-    lv_obj_set_style_bg_color(btnSS, lv_color_hex(0x0300), 0);
-    lv_obj_set_style_radius(btnSS, 12, 0);
-    lv_obj_set_style_border_width(btnSS, 0, 0);
-    lv_obj_add_event_cb(btnSS, onServoStart, LV_EVENT_CLICKED, NULL);
-    lv_obj_t* tSS = lv_label_create(btnSS);
-    lv_label_set_text(tSS, "Servo Start");
-    lv_obj_set_style_text_font(tSS, UI_F24, 0);
-    lv_obj_center(tSS);
+    lv_obj_t* btnEstopCtrl = lv_btn_create(scr);
+    lv_obj_set_size(btnEstopCtrl, btnW2, btnH2);
+    lv_obj_set_pos(btnEstopCtrl, startX + btnW2 + bGap, btnY);
+    lv_obj_set_style_bg_color(btnEstopCtrl, lv_color_hex(UI_RED), 0);
+    lv_obj_set_style_radius(btnEstopCtrl, 12, 0);
+    lv_obj_set_style_border_width(btnEstopCtrl, 0, 0);
+    lv_obj_add_event_cb(btnEstopCtrl, onEstop, LV_EVENT_CLICKED, NULL);
+    lv_obj_t* tEC = lv_label_create(btnEstopCtrl);
+    lv_label_set_text(tEC, LV_SYMBOL_STOP "  E-STOP");
+    lv_obj_set_style_text_font(tEC, UI_F24, 0);
+    lv_obj_center(tEC);
 
     lv_obj_t* btnSE = lv_btn_create(scr);
     lv_obj_set_size(btnSE, btnW2, btnH2);
@@ -188,9 +231,36 @@ lv_obj_t* ui_control_create(lv_obj_t* parent) {
     lv_obj_set_style_text_font(tSE, UI_F24, 0);
     lv_obj_center(tSE);
 
+    // Row 2: Servo Start | Reset | Timing Test
+    int btnY2 = btnY + btnH2 + 16;
+
+    lv_obj_t* btnSS = lv_btn_create(scr);
+    lv_obj_set_size(btnSS, btnW2, btnH2);
+    lv_obj_set_pos(btnSS, startX, btnY2);
+    lv_obj_set_style_bg_color(btnSS, lv_color_hex(0x0300), 0);
+    lv_obj_set_style_radius(btnSS, 12, 0);
+    lv_obj_set_style_border_width(btnSS, 0, 0);
+    lv_obj_add_event_cb(btnSS, onServoStart, LV_EVENT_CLICKED, NULL);
+    lv_obj_t* tSS = lv_label_create(btnSS);
+    lv_label_set_text(tSS, "Servo Start");
+    lv_obj_set_style_text_font(tSS, UI_F24, 0);
+    lv_obj_center(tSS);
+
+    lv_obj_t* btnReset = lv_btn_create(scr);
+    lv_obj_set_size(btnReset, btnW2, btnH2);
+    lv_obj_set_pos(btnReset, startX + btnW2 + bGap, btnY2);
+    lv_obj_set_style_bg_color(btnReset, lv_color_hex(UI_AMBER), 0);
+    lv_obj_set_style_radius(btnReset, 12, 0);
+    lv_obj_set_style_border_width(btnReset, 0, 0);
+    lv_obj_add_event_cb(btnReset, onReset, LV_EVENT_CLICKED, NULL);
+    lv_obj_t* tR = lv_label_create(btnReset);
+    lv_label_set_text(tR, LV_SYMBOL_REFRESH "  Reset");
+    lv_obj_set_style_text_font(tR, UI_F24, 0);
+    lv_obj_center(tR);
+
     lv_obj_t* btnTT = lv_btn_create(scr);
     lv_obj_set_size(btnTT, btnW2, btnH2);
-    lv_obj_set_pos(btnTT, startX, btnY + btnH2 + 16);
+    lv_obj_set_pos(btnTT, startX + (btnW2 + bGap) * 2, btnY2);
     lv_obj_set_style_bg_color(btnTT, lv_color_hex(UI_CARD), 0);
     lv_obj_set_style_radius(btnTT, 12, 0);
     lv_obj_set_style_border_width(btnTT, 0, 0);

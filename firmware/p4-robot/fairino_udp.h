@@ -51,6 +51,7 @@ public:
                     float acc = 0, float vel = 0, float cmdT = 0.008f,
                     float filterT = 0, float gain = 0);
     int      servoTimingTest();  // Start + immediate End — safe timing check
+    int      stopMotion();       // Immediate stop (cmdID=102, official SDK E-STOP)
 
 private:
     WiFiUDP  _udp;

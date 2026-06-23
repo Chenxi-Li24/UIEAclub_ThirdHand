@@ -29,14 +29,17 @@ bool hwDisplayInit() {
 
 bool hwDisplayInitLVGL() {
     lv_init();
+    // Use sizeof(lv_color_t) — matches LV_COLOR_DEPTH 16 (RGB565), NOT int32_t
     size_t bufPixels = LCD_H_RES * LCD_V_RES;
-    size_t bufBytes = bufPixels * sizeof(int32_t);
+    size_t bufBytes = bufPixels * sizeof(lv_color_t);   // 800*1280*2 = 2,048,000 per buf
+    Serial.printf("[DISP] Allocating 2x %u bytes (%u KB) PSRAM for LVGL\n", bufBytes, bufBytes / 1024);
     s_buf1 = (lv_color_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_SPIRAM);
     s_buf2 = (lv_color_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_SPIRAM);
     if (!s_buf1 || !s_buf2) {
         Serial.printf("[DISP] PSRAM alloc FAILED (%u bytes)\n", bufBytes);
         return false;
     }
+    Serial.printf("[DISP] PSRAM buf1=%p buf2=%p\n", s_buf1, s_buf2);
     lv_disp_draw_buf_init(&s_drawBuf, s_buf1, s_buf2, bufPixels);
     static lv_disp_drv_t dispDrv;
     lv_disp_drv_init(&dispDrv);
@@ -46,7 +49,7 @@ bool hwDisplayInitLVGL() {
     dispDrv.draw_buf = &s_drawBuf;
     dispDrv.full_refresh = true;
     lv_disp_drv_register(&dispDrv);
-    Serial.println("[DISP] LVGL OK (ARGB8888 full_refresh)");
+    Serial.printf("[DISP] LVGL OK (RGB565 full_refresh, %ux%u)\n", LCD_H_RES, LCD_V_RES);
     return true;
 }
 
