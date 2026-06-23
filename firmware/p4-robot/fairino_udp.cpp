@@ -111,14 +111,6 @@ int FairinoUDPClient::servoJ(float j1, float j2, float j3, float j4, float j5, f
     return sendCommand(CMD_SERVO_J, String(cmd));
 }
 
-// ── Immediate Stop (official SDK cmdID=102, content="STOP") ──────────
-// This matches FRRobot::StopMotion() in the official Fairino C++ SDK:
-//   sprintf(g_sendbuf, "/f/bIII44III102III4IIISTOPIII/b/f");
-
-int FairinoUDPClient::stopMotion() {
-    return sendCommand(102, "STOP");
-}
-
 // ── Safety: timing test — Start then immediately End ─────────────────
 
 int FairinoUDPClient::servoTimingTest() {

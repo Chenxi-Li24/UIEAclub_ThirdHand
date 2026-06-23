@@ -16,6 +16,8 @@ const config = require('./config');
 // ── Express 静态文件 ──────────────────────────────────────────────
 const app = express();
 app.use(express.static(path.join(__dirname, '..', 'web')));
+// 3D 模型已移至仓库根 3d-models/，通过 /models 虚拟路径暴露
+app.use('/models', express.static(path.join(__dirname, '..', '..', '3d-models', 'models')));
 const server = http.createServer(app);
 
 // ── WebSocket 服务器 ──────────────────────────────────────────────
