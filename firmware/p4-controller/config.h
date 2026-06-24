@@ -18,6 +18,13 @@
 #define SELF_TEST_SETTLE_MS 5000    // 每个位置停留时间(ms)
 #define SELF_TEST_TIMEOUT   300000  // 5min overall timeout
 
+// ── Web/UDP servo command parameters ────────────────────────────────
+// Web 端做轨迹插补，每 16ms 发一条 ServoJ，cmdT 需匹配插补间隔
+// SDK 建议范围: 0.001~0.016s
+#define WEB_SERVO_ACC       0.0f
+#define WEB_SERVO_VEL       0.0f
+#define WEB_SERVO_CMDT      0.016f  // 16ms 指令周期（匹配 Web 插补间隔）
+
 // ── Display & Touch ──────────────────────────────────────────────────
 #define ENABLE_DISPLAY  1   // JD9365DA MIPI DSI 800×1280
 #define ENABLE_TOUCH    1   // GSL3680 I2C capacitive touch

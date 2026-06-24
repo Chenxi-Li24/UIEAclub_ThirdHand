@@ -28,6 +28,10 @@ const clients = new Set();
 let transport = null;
 let heartbeatTimer = null;
 
+// ── 当前关节位置缓存（从 ESP32 CNDE 回读更新）─────────────────────
+let currentJoints = [0, 0, 0, 0, 0, 0];
+let motionInProgress = false;
+
 /** UDP (WiFi) 传输 — 单 socket 收发 */
 class WifiTransport {
   constructor(host, port) {
@@ -96,6 +100,8 @@ async function connectWifi(opts) {
           const state = parts[6];
           const hbAge = parts[7];
           const stateNames = ['IDLE', 'MOVING', 'E-STOP', 'ERROR', 'LOCKED'];
+          // 更新当前关节位置缓存
+          currentJoints = parts.slice(0, 6);
           broadcast({
             type: 'cnde_state',
             joints: parts.slice(0, 6),
@@ -151,6 +157,7 @@ wss.on('connection', (ws) => {
     type: 'config',
     presets: config.presets,
     servo: config.servo,
+    motion: config.motion,
     connection: transport ? transport.getInfo() : { mode: 'wifi', connected: false }
   }));
 
@@ -168,6 +175,58 @@ wss.on('connection', (ws) => {
     console.log(`[WS] client disconnected (${clients.size} total)`);
   });
 });
+
+// ── 轨迹插补发送 ──────────────────────────────────────────────────
+// 将大位移拆成 N 段小位移逐条发送，控制运动速度
+// 运动时间 = steps × interval，速度 = 位移 / 时间
+async function sendServoInterpolated(targetJoints) {
+  if (!transport || !transport.connected) {
+    broadcast({ type: 'error', msg: '未连接到控制板' });
+    return;
+  }
+  if (motionInProgress) {
+    broadcast({ type: 'error', msg: '运动进行中，请等待完成' });
+    return;
+  }
+
+  const steps = config.motion.steps;
+  const interval = config.motion.interval;
+  const startJoints = [...currentJoints];
+
+  console.log(`[MOTION] 插补 ${steps} 步, 间隔 ${interval}ms, 总时长 ${(steps * interval / 1000).toFixed(2)}s`);
+  console.log(`[MOTION] 起点: ${startJoints.map(j => j.toFixed(1)).join(' ')}`);
+  console.log(`[MOTION] 终点: ${targetJoints.map(j => j.toFixed(1)).join(' ')}`);
+
+  motionInProgress = true;
+  broadcast({ type: 'motion_start', target: targetJoints, steps, interval });
+
+  // 进入伺服模式
+  transport.send('servo start');
+  await sleep(50);
+
+  // 逐段发送插补点
+  for (let i = 1; i <= steps; i++) {
+    if (!motionInProgress) break;  // 被急停打断
+    const t = i / steps;
+    const interp = startJoints.map((s, idx) => s + (targetJoints[idx] - s) * t);
+    const j = interp.map(v => v.toFixed(3)).join(' ');
+    transport.send(`servo j1 ${j}`);
+    if (i < steps) await sleep(interval);
+  }
+
+  // 退出伺服模式
+  await sleep(50);
+  transport.send('servo end');
+
+  // 更新缓存
+  currentJoints = [...targetJoints];
+  motionInProgress = false;
+
+  console.log(`[MOTION] 完成`);
+  broadcast({ type: 'motion_done', target: targetJoints });
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ── 浏览器命令处理 ────────────────────────────────────────────────
 async function handleBrowserCommand(msg, ws) {
@@ -198,8 +257,8 @@ async function handleBrowserCommand(msg, ws) {
         ws.send(JSON.stringify({ type: 'error', msg: 'joints must be [j1..j6]' }));
         return;
       }
-      const j = msg.joints.map(v => v.toFixed(3)).join(' ');
-      transport.send(`servo j1 ${j}`);
+      // 轨迹插补发送（控制运动速度）
+      sendServoInterpolated(msg.joints);
       break;
     }
 
@@ -218,12 +277,13 @@ async function handleBrowserCommand(msg, ws) {
         ws.send(JSON.stringify({ type: 'error', msg: `unknown preset: ${msg.name}` }));
         return;
       }
-      const j = joints.map(v => v.toFixed(3)).join(' ');
-      transport.send(`servo j1 ${j}`);
+      // 轨迹插补发送（控制运动速度）
+      sendServoInterpolated(joints);
       break;
     }
 
     case 'estop': {
+      motionInProgress = false;  // 打断插补循环
       if (transport && transport.connected) {
         // 连续发送停止指令确保立即打断当前运动
         transport.send('estop');

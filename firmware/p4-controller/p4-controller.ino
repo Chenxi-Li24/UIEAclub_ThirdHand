@@ -458,7 +458,7 @@ void loop() {
                     g_state.transition(RSTATE_MOVING);
                     int r = g_fairino.servoJ(e.joints[0], e.joints[1], e.joints[2],
                                               e.joints[3], e.joints[4], e.joints[5],
-                                              SELF_TEST_ACC, SELF_TEST_VEL, SELF_TEST_CMDT, 0, 0);
+                                              WEB_SERVO_ACC, WEB_SERVO_VEL, WEB_SERVO_CMDT, 0, 0);
                     if (r != FR_OK) {
                         cmdRespondF("ERR: servoJ failed %d\r\n", r);
                         g_state.transition(RSTATE_ERROR);
