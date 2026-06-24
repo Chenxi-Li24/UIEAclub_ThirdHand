@@ -1,13 +1,9 @@
-﻿console.log('[main.js] Loading modules...');
+console.log('[main.js] Loading modules...');
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 console.log('[main.js] Modules imported, THREE keys:', Object.keys(THREE).length);
 
-// === scene.js ===
-/**
- * Scene — Three.js 场景管理
- * 创建场景、相机、灯光、轨道控制、辅助元素
- */
+// === SceneManager ===
 class SceneManager {
   constructor(container) {
     this.container = container;
@@ -26,17 +22,16 @@ class SceneManager {
     const w = this.container.clientWidth;
     const h = this.container.clientHeight;
 
-    // 场景
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0d1117);
-    this.scene.fog = new THREE.Fog(0x0d1117, 800, 3000);
+    // 背景色跟随 CSS --bg-primary（通过计算样式获取），默认深空色
+    const bgColor = this._getComputedBgColor();
+    this.scene.background = bgColor;
+    this.scene.fog = new THREE.Fog(bgColor.getHex(), 800, 3000);
 
-    // 相机
     this.camera = new THREE.PerspectiveCamera(50, w / h, 1, 5000);
     this.camera.position.set(600, 400, 600);
     this.camera.lookAt(0, 200, 0);
 
-    // 渲染器
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setSize(w, h);
     this.renderer.setPixelRatio(window.devicePixelRatio);
@@ -44,7 +39,6 @@ class SceneManager {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.container.appendChild(this.renderer.domElement);
 
-    // 轨道控制
     if (OrbitControls) {
       this.controls = new OrbitControls(this.camera, this.renderer.domElement);
       this.controls.enableDamping = true;
@@ -54,7 +48,6 @@ class SceneManager {
       this.controls.maxDistance = 2000;
     }
 
-    // 灯光 - 加强照明确保模型可见
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.6));
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 0.4));
 
@@ -70,19 +63,43 @@ class SceneManager {
     dirLight3.position.set(0, -200, 500);
     this.scene.add(dirLight3);
 
-    // 网格地面
     this.grid = new THREE.GridHelper(1200, 24, 0x2d3a5c, 0x1a2340);
     this.scene.add(this.grid);
 
-    // 坐标轴
     this.axes = new THREE.AxesHelper(250);
     this.scene.add(this.axes);
 
-    // 窗口 resize
     window.addEventListener('resize', () => this._onResize());
+    // 监听主题切换更新背景色
+    const observer = new MutationObserver(() => this._updateBgColor());
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
-    // 渲染循环
     this._animate();
+  }
+
+  _getComputedBgColor() {
+    const style = getComputedStyle(document.documentElement);
+    const bg = style.getPropertyValue('--bg-primary').trim();
+    // 解析 css var，从 computedStyle 获取实际值
+    const computed = document.documentElement.style.getPropertyValue('--bg-primary');
+    if (computed) {
+      const el = document.createElement('div');
+      el.style.color = computed;
+      document.body.appendChild(el);
+      const color = getComputedStyle(el).color;
+      document.body.removeChild(el);
+      const m = color.match(/(\d+),\s*(\d+),\s*(\d+)/);
+      if (m) return new THREE.Color(+m[1]/255, +m[2]/255, +m[3]/255);
+    }
+    return new THREE.Color(0x0a0e1a);
+  }
+
+  _updateBgColor() {
+    const bgColor = this._getComputedBgColor();
+    if (this.scene) {
+      this.scene.background = bgColor;
+      this.scene.fog.color = bgColor;
+    }
   }
 
   _onResize() {
@@ -102,11 +119,13 @@ class SceneManager {
   toggleGrid() {
     this.showGrid = !this.showGrid;
     this.grid.visible = this.showGrid;
+    return this.showGrid;
   }
 
   toggleAxes() {
     this.showAxes = !this.showAxes;
     this.axes.visible = this.showAxes;
+    return this.showAxes;
   }
 
   resetView() {
@@ -119,20 +138,15 @@ class SceneManager {
 }
 
 
-// === arm-model.js ===
-/**
- * ArmModel — URDF 模型加载
- * 用 urdf-loader 加载 TCR050 URDF，自动处理关节轴和运动学链
- */
+// === ArmModel ===
 class ArmModel {
   constructor(scene) {
     this.scene = scene;
     this.robot = null;
     this.jointAngles = [0, 0, 0, 0, 0, 0];
-    this.jointNames = []; // 从 URDF 解析的关节名
+    this.jointNames = [];
     this.loaded = false;
-    this.installMode = 'floor'; // 'floor' | 'wall'
-    // 零点偏移: 滑块/控制值=0 时，实际关节角度 = zeroOffset
+    this.installMode = 'floor';
     this.zeroOffset = [0, 90, -90, 90, 90, 0];
     this.loadingPromise = this._loadURDF();
   }
@@ -142,12 +156,9 @@ class ArmModel {
       const loader = new window.URDFLoader();
       loader.load('models/TCR050/TCR050.urdf', (robot) => {
         this.robot = robot;
-        // URDF 用米制，场景用毫米 → 放大 1000 倍
         robot.scale.set(1000, 1000, 1000);
-        // URDF Z-up → Three.js Y-up: 绕 X 轴旋转 -90°
         robot.rotation.x = -Math.PI / 2;
 
-        // 统一材质
         robot.traverse(child => {
           if (child.isMesh) {
             child.material = new THREE.MeshStandardMaterial({
@@ -157,11 +168,9 @@ class ArmModel {
           }
         });
 
-        // 提取关节名 (按 URDF 中的顺序)
         this.jointNames = Object.keys(robot.joints);
         console.log('[ArmModel] URDF joints:', this.jointNames);
 
-        // 解析关节限位
         this.jointLimits = this.jointNames.map(name => {
           const j = robot.joints[name];
           const lower = j.limit?.lower != null ? j.limit.lower * 180 / Math.PI : -180;
@@ -180,12 +189,11 @@ class ArmModel {
     });
   }
 
-  /** 设置关节角度 (控制值)，自动加上零点偏移 */
   setJointAngles(angles) {
     if (!this.robot || !angles) return;
     for (let i = 0; i < this.jointNames.length && i < angles.length; i++) {
       const offset = this.zeroOffset[i] || 0;
-      const actual = angles[i] + offset; // 控制值 + 零点偏移 = 实际角度
+      const actual = angles[i] + offset;
       const [mn, mx] = this.jointLimits[i] || [-180, 180];
       const clamped = Math.max(mn, Math.min(mx, actual));
       this.robot.joints[this.jointNames[i]].setJointValue(clamped * Math.PI / 180);
@@ -195,24 +203,19 @@ class ArmModel {
 
   getJointAngles() { return this.jointAngles.slice(); }
 
-  /** 切换安装方式: 'floor'(地面) | 'wall'(壁挂) */
   setInstallMode(mode) {
     if (!this.robot) return;
     this.installMode = mode;
     if (mode === 'floor') {
-      // 地面安装: Z-up → Y-up, 绕 X 轴 -90°
       this.robot.rotation.set(-Math.PI / 2, 0, 0);
     } else {
-      // 壁挂安装: 垂直于地面安装面，绕 Z 轴 +90° (翻转上下)
       this.robot.rotation.set(0, 0, Math.PI / 2);
     }
     console.log('[ArmModel] Install mode:', mode);
   }
 
-  /** 回零: 所有关节控制值归零 (实际角度 = zeroOffset) */
   goHome() {
     this.setJointAngles(new Array(this.jointNames.length).fill(0));
-    console.log('[ArmModel] Home: all zeros');
   }
 
   getEndEffectorPosition() {
@@ -227,11 +230,7 @@ class ArmModel {
 }
 
 
-// === ws-client.js ===
-/**
- * WSClient — WebSocket 客户端
- * 连接 Node.js 代理，收发 JSON 消息
- */
+// === WSClient ===
 class WSClient {
   constructor() {
     this.ws = null;
@@ -309,15 +308,9 @@ class WSClient {
 }
 
 
-// === ui-controls.js ===
-/**
- * UIControls — 关节控制面板
- * 6 个关节滑块 + 数值输入 + 预设按钮 + 状态显示
- */
+// === UIControls ===
 class UIControls {
-  constructor(armContainer, bottomContainer, wsClient, armModel) {
-    this.armContainer = armContainer;
-    this.bottomContainer = bottomContainer;
+  constructor(wsClient, armModel) {
     this.ws = wsClient;
     this.arm = armModel;
     this.sliders = [];
@@ -325,326 +318,291 @@ class UIControls {
     this.liveMode = false;
     this.syncMode = false;
     this.presets = {};
-    // build 延迟到 URDF 加载完成后调用
+    this._drawerCollapsed = false;
   }
 
   build() {
-    this.armContainer.innerHTML = '';
-    this.bottomContainer.innerHTML = '';
-    this.container = this.bottomContainer; // _addSection 默认加到底部
-
-    // ── 设备连接 (仅 WiFi) ──
-    this._addSection('设备连接', `
-      <div class="conn-panel">
-        <div class="conn-row">
-          <label>ESP32 IP</label>
-          <input type="text" id="wifi-host" class="conn-input" value="192.168.58.100">
-        </div>
-        <div class="conn-row">
-          <label>UDP 端口</label>
-          <input type="number" id="wifi-port" class="conn-input" value="20008">
-        </div>
-        <button class="btn btn-primary" id="btn-connect-wifi">连接</button>
-        <button class="btn btn-danger" id="btn-disconnect-wifi" style="display:none">断开</button>
-      </div>
-      <div id="conn-status" class="conn-status-bar">
-        <span class="status disconnected" id="wifi-status">● 未连接</span>
-      </div>
-    `);
-
-    // 绑定连接面板事件
-    this._bindConnectionPanel();
-
-
-    // 关节控制
-    const jointSection = document.createElement('div');
-    jointSection.className = 'panel-section';
-    jointSection.innerHTML = '<h3>关节控制</h3>';
+    // ── 构建关节控制区 ────────────────────────────────
+    const body = document.getElementById('joint-controls-body');
+    if (!body) return;
 
     const jointNames = this.arm.jointNames || [];
     const limits = this.arm.jointLimits || [];
-    const count = jointNames.length;
 
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < jointNames.length; i++) {
       const row = document.createElement('div');
-      row.className = 'joint-control-row';
+      row.className = 'joint-row';
       row.innerHTML = `
-        <label>${jointNames[i]}</label>
-        <div class="slider-group">
-          <input type="range" class="joint-slider" id="slider-j${i}"
-                 min="${limits[i][0]}" max="${limits[i][1]}" step="0.1" value="0">
-          <input type="number" class="joint-input" id="input-j${i}"
-                 min="${limits[i][0]}" max="${limits[i][1]}" step="0.1" value="0">
-          <span class="joint-unit">°</span>
+        <div class="joint-label">
+          <span class="joint-name">${jointNames[i]}</span>
+          <span class="joint-value" id="jval-${i}">0.0°</span>
         </div>
+        <input type="range" class="joint-slider"
+               id="slider-j${i}"
+               min="${limits[i][0]}" max="${limits[i][1]}" step="0.1" value="0">
       `;
-      jointSection.appendChild(row);
+      body.appendChild(row);
 
       const slider = row.querySelector('.joint-slider');
-      const input = row.querySelector('.joint-input');
+      const valEl = row.querySelector('.joint-value');
       this.sliders.push(slider);
-      this.inputs.push(input);
+      // 默认姿态: [0, -90, 90, -90, -90, 0]
+      const defaultVal = [0, -90, 90, -90, -90, 0][i] || 0;
+      slider.value = defaultVal;
+      valEl.textContent = defaultVal.toFixed(1) + '°';
 
       slider.addEventListener('input', () => {
         const val = parseFloat(slider.value);
-        input.value = val.toFixed(1);
-        this._updateArm(i, val);
-        if (this.liveMode) this._sendServo();
-      });
-
-      input.addEventListener('change', () => {
-        const val = parseFloat(input.value) || 0;
-        slider.value = val;
+        valEl.textContent = val.toFixed(1) + '°';
         this._updateArm(i, val);
         if (this.liveMode) this._sendServo();
       });
     }
 
-    this.armContainer.appendChild(jointSection);
+    // ── 绑定各 UI 事件 ─────────────────────────────────
 
-    // 实时关节角度
-    this._addArmSection('实时角度', `
-      <div class="rt-angles" id="rt-angles">
-        <span class="rt-angle" id="rt-j1">J1: --</span>
-        <span class="rt-angle" id="rt-j2">J2: --</span>
-        <span class="rt-angle" id="rt-j3">J3: --</span>
-        <span class="rt-angle" id="rt-j4">J4: --</span>
-        <span class="rt-angle" id="rt-j5">J5: --</span>
-        <span class="rt-angle" id="rt-j6">J6: --</span>
-      </div>
-      <div class="toggle-row">
-        <label>
-          <input type="checkbox" id="chk-sync"> 同步 3D 模型
-        </label>
-        <span class="hint">实时数据驱动模型</span>
-      </div>
-    `);
-
-    document.getElementById('chk-sync').addEventListener('change', (e) => {
-      this.syncMode = e.target.checked;
+    // 连接按钮
+    document.getElementById('btn-connect').addEventListener('click', () => {
+      const host = document.getElementById('wifi-host').value;
+      const port = parseInt(document.getElementById('wifi-port').value) || 20008;
+      this.ws.send({ cmd: 'connect', mode: 'wifi', host, port });
+      this._log(`→ 连接 ${host}:${port}`);
+      this._setConnStatus('connecting', host);
     });
 
-    // 操作按钮
-// 状态指示    this._addArmSection('状态', `      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">        <span id="state-badge" style="padding:6px 16px;border-radius:8px;font-weight:bold;font-size:16px;background:#1a1a2e;color:#aaa;">DISCONNECTED</span>        <span id="hb-indicator" style="font-size:12px;color:#666;">hb ---</span>      </div>    `);
-    this._addArmSection('操作', `
-      <div class="btn-group">
-        <button class="btn btn-primary" id="btn-send">发送到机械臂</button>
-        <button class="btn btn-danger" id="btn-estop" style="font-size:18px;font-weight:bold;padding:10px 24px;">S 急停 (E-STOP)</button>
-      </div>
-      <div class="btn-group">
-        <button class="btn btn-success" id="btn-home">回零</button>
-        <button class="btn btn-warning" id="btn-reset" style="display:none;">R 复位 (Reset)</button>
-      </div>
-      <div class="toggle-row">
-        <label>
-          <input type="checkbox" id="chk-live"> 实时发送模式
-        </label>
-        <span class="hint">拖动滑块即时发送指令</span>
-      </div>
-    `);
+    document.getElementById('btn-disconnect').addEventListener('click', () => {
+      this.ws.send({ cmd: 'disconnect', mode: 'wifi' });
+      this._log('→ 断开连接');
+      this._setConnStatus('disconnected', '');
+    });
 
-    document.getElementById('btn-send').addEventListener('click', () => this._sendServo());
-    document.getElementById('btn-estop').addEventListener('click', () => {
+    // 发送按钮
+    document.getElementById('btn-send').addEventListener('click', () => {
+      this._sendServo();
+    });
+
+    // 急停
+    document.getElementById('btn-estop-top').addEventListener('click', () => {
       this.ws.send({ cmd: 'estop' });
+      this._log('→ E-STOP');
     });
+
+    // 回零
     document.getElementById('btn-home').addEventListener('click', () => {
       this.arm.goHome();
-      this.setJointValues(new Array(this.arm.jointNames.length).fill(0));
+      const zeros = new Array(this.arm.jointNames.length).fill(0);
+      this.setJointValues(zeros);
       this._log('→ 回零');
     });
+
+    // 实时发送
     document.getElementById('chk-live').addEventListener('change', (e) => {
       this.liveMode = e.target.checked;
     });
 
-    // 预设位置
-    this._addArmSection('预设位置', '<div class="preset-grid" id="preset-grid"></div>');
-
-    // 末端位置
-    this._addArmSection('末端位置', `
-      <div class="ee-pos" id="ee-pos">
-        X: <span id="ee-x">0.00</span> &nbsp;
-        Y: <span id="ee-y">0.00</span> &nbsp;
-        Z: <span id="ee-z">0.00</span> mm
-      </div>
-    `);
-
-    // 安装方式
-    this._addArmSection('安装方式', `
-      <div class="btn-group">
-        <button class="btn btn-primary" id="btn-floor">地面安装</button>
-        <button class="btn btn-secondary" id="btn-wall">壁挂安装</button>
-      </div>
-    `);
-    document.getElementById('btn-floor').addEventListener('click', () => {
-      this.arm.setInstallMode('floor');
-      document.getElementById('btn-floor').className = 'btn btn-primary';
-      document.getElementById('btn-wall').className = 'btn btn-secondary';
-    });
-    document.getElementById('btn-wall').addEventListener('click', () => {
-      this.arm.setInstallMode('wall');
-      document.getElementById('btn-floor').className = 'btn btn-secondary';
-      document.getElementById('btn-wall').className = 'btn btn-primary';
+    // 同步 3D 模型
+    document.getElementById('chk-sync').addEventListener('change', (e) => {
+      this.syncMode = e.target.checked;
     });
 
-    // 视图控制
-    this._addArmSection('视图', `
-      <div class="btn-group">
-        <button class="btn btn-secondary" id="btn-grid">切换网格</button>
-        <button class="btn btn-secondary" id="btn-axes">切换坐标轴</button>
-        <button class="btn btn-secondary" id="btn-reset">重置视角</button>
-      </div>
-    `);
+    // 抽屉收起/展开
+    const drawer = document.getElementById('control-drawer');
+    const handle = document.getElementById('drawer-handle');
+    const toggleBtn = document.getElementById('btn-drawer-toggle');
 
-    // 通信日志（底部栏）
-    this._addBottomSection('通信日志', '<div class="log-area" id="log-area"></div>', false);
+    const collapseDrawer = () => {
+      drawer.classList.add('collapsed');
+      this._drawerCollapsed = true;
+    };
+    const expandDrawer = () => {
+      drawer.classList.remove('collapsed');
+      this._drawerCollapsed = false;
+    };
+    const toggleDrawer = () => {
+      if (this._drawerCollapsed) expandDrawer(); else collapseDrawer();
+    };
+
+    // handle 固定显示 ◂，仅收起时可见（CSS 控制）
+    handle.textContent = '◂';
+    handle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleDrawer();
+    });
+    toggleBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleDrawer();
+    });
+
+    // section 折叠
+    document.querySelectorAll('.sec-header').forEach(header => {
+      header.addEventListener('click', () => {
+        const section = header.closest('.drawer-section');
+        section.classList.toggle('collapsed');
+      });
+    });
+
+    // 抽屉内视图按钮（暂时禁止冒泡，防止触发视口交互）
+    document.getElementById('btn-send').addEventListener('click', e => e.stopPropagation());
+    document.getElementById('btn-home').addEventListener('click', e => e.stopPropagation());
+    document.getElementById('btn-reset').addEventListener('click', e => e.stopPropagation());
+    document.querySelectorAll('.sec-header').forEach(h => {
+      h.addEventListener('click', e => e.stopPropagation());
+    });
+    document.querySelectorAll('.joint-slider').forEach(s => {
+      s.addEventListener('input', e => e.stopPropagation());
+    });
+
+    // 抽屉内连接按钮
+    document.getElementById('btn-connect').addEventListener('click', e => e.stopPropagation());
+    document.getElementById('btn-disconnect').addEventListener('click', e => e.stopPropagation());
+
+    // 日志面板（按钮在连接栏中）
+    const logPanel = document.getElementById('log-panel');
+    const logBtn = document.getElementById('btn-log-toggle');
+    logBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const open = logPanel.classList.toggle('open');
+      logBtn.classList.toggle('active', open);
+    });
+    document.getElementById('btn-log-close').addEventListener('click', () => {
+      logPanel.classList.remove('open');
+      logBtn.classList.remove('active');
+    });
 
     // WebSocket 事件监听
     this.ws.on('connection', (data) => {
-      // header 中的 WS 状态
-      const wsEl = document.getElementById('ws-status');
-      if (wsEl) {
-        wsEl.className = `status ${data.connected ? 'connected' : 'disconnected'}`;
-        wsEl.textContent = data.connected ? '● 已连接' : '● 未连接';
+      if (data.connected) {
+        this._setConnStatus('connected', `${data.host}:${data.port}`);
+      } else {
+        this._setConnStatus('disconnected', '');
+        // 断开时闪红框
+        const app = document.getElementById('app');
+        app.classList.remove('disconnected');
+        void app.offsetWidth; // reflow
+        app.classList.add('disconnected');
+        setTimeout(() => app.classList.remove('disconnected'), 1100);
       }
-      // 设备连接状态
-      if (data.mode) this._updateConnection(data);
     });
+
     this.ws.on('config', (data) => {
       console.log('[UI] config received, presets:', data.presets ? Object.keys(data.presets) : 'none');
       if (data.presets) this._setPresets(data.presets);
-      if (data.connection) this._updateConnection(data.connection);
+      if (data.connection) this._setConnStatus(data.connection.connected ? 'connected' : 'disconnected', `${data.connection.host}:${data.connection.port}`);
     });
-    this.ws.on('state', (data) => {
-      if (data.joints) this.setJointValues(data.joints);
-    });
+
     this.ws.on('cnde_state', (data) => {
-      // CNDE 回读的是机器人真实关节角，与控制值同坐标系，无需转换
+      // 更新实时角度
       if (data.joints && data.joints.length >= 6) {
-        // 更新实时角度栏（内部按 syncMode 决定是否同步滑块/模型）
         this._updateRTAngles(data.joints);
-if (data.stateName && this.stateBadge) {        const colors = { IDLE:'#2ea043', MOVING:'#58a6ff', 'E-STOP':'#da3633', ERROR:'#da3633', LOCKED:'#d29922' };        this.stateBadge.textContent = data.stateName;        this.stateBadge.style.background = colors[data.stateName] || '#1a1a2e';        this.stateBadge.style.color = '#fff';        if (this.btnReset) this.btnReset.style.display = (data.stateName === 'E-STOP' || data.stateName === 'ERROR' || data.stateName === 'LOCKED') ? '' : 'none';      }      if (data.heartbeatAge !== undefined && this.hbIndicator) {        const ok = data.heartbeatAge < 2000;        this.hbIndicator.textContent = ok ? 'hb OK' : 'hb LOST';        this.hbIndicator.style.color = ok ? '#2ea043' : '#da3633';      }
-        this._log(`← J: ${data.joints.map(j => j.toFixed(1)).join(' ')}`);
+        // 同步滑块
+        if (this.syncMode) {
+          this.setJointValues(data.joints);
+        }
+      }
+      // 更新状态徽章
+      if (data.stateName) {
+        this._updateStateBadge(data.stateName);
+        // E-STOP 遮罩
+        const overlay = document.getElementById('estop-overlay');
+        if (data.stateName === 'E-STOP') {
+          overlay.classList.add('active');
+        } else {
+          overlay.classList.remove('active');
+        }
+        // 复位按钮
+        const resetBtn = document.getElementById('btn-reset');
+        if (resetBtn) {
+          resetBtn.style.display = ['E-STOP', 'ERROR', 'LOCKED'].includes(data.stateName) ? '' : 'none';
+        }
+      }
+      // 心跳
+      if (data.heartbeatAge !== undefined) {
+        const hb = document.getElementById('hb-label');
+        if (hb) {
+          const ok = data.heartbeatAge < 2000;
+          hb.textContent = ok ? 'hb:OK' : 'hb:LOST';
+          hb.className = `hb-label ${ok ? 'ok' : 'lost'}`;
+        }
       }
     });
+
     this.ws.on('esp32_msg', (data) => {
       this._log('← ' + data.raw);
-      // 尝试解析关节角度 (格式: "J1,J2,J3,J4,J5,J6")
       const parts = data.raw.split(',').map(Number);
       if (parts.length === 6 && parts.every(n => !isNaN(n))) {
         this._updateRTAngles(parts);
       }
     });
+
     this.ws.on('error', (data) => this._log('⚠ ' + data.msg));
 
-    // 如果 config 已提前到达，补渲染预设
+    // 如有预设提前到达，补渲染
     if (Object.keys(this.presets).length) {
-      console.log('[UI] deferred preset render, count:', Object.keys(this.presets).length);
       this._setPresets(this.presets);
     }
-    console.log('[UI] build done, preset-grid:', document.getElementById('preset-grid'));
   }
 
-  _addSection(title, html, collapsible = true) {
-    const section = document.createElement('div');
-    section.className = 'panel-section';
-    section.innerHTML = `<h3>${title}</h3><div class="section-content">${html}</div>`;
-    if (collapsible) {
-      section.querySelector('h3').addEventListener('click', () => {
-        section.classList.toggle('collapsed');
-      });
-    }
-    this.container.appendChild(section);
-  }
+  _setConnStatus(mode, info) {
+    const dot = document.getElementById('conn-dot');
+    const ip = document.getElementById('conn-ip');
+    const btnConnect = document.getElementById('btn-connect');
+    const btnDisconnect = document.getElementById('btn-disconnect');
 
-  _addArmSection(title, html, collapsible = true) {
-    const section = document.createElement('div');
-    section.className = 'panel-section';
-    section.innerHTML = `<h3>${title}</h3><div class="section-content">${html}</div>`;
-    if (collapsible) {
-      section.querySelector('h3').addEventListener('click', () => {
-        section.classList.toggle('collapsed');
-      });
-    }
-    this.armContainer.appendChild(section);
-  }
-
-  _addBottomSection(title, html, collapsible = true) {
-    const section = document.createElement('div');
-    section.className = 'panel-section';
-    section.innerHTML = `<h3>${title}</h3><div class="section-content">${html}</div>`;
-    if (collapsible) {
-      section.querySelector('h3').addEventListener('click', () => {
-        section.classList.toggle('collapsed');
-      });
-    }
-    this.bottomContainer.appendChild(section);
-  }
-
-  _bindConnectionPanel() {
-    // 连接无线
-    document.getElementById('btn-connect-wifi').addEventListener('click', () => {
-      const host = document.getElementById('wifi-host').value;
-      const port = parseInt(document.getElementById('wifi-port').value);
-      this.ws.send({ cmd: 'connect', mode: 'wifi', host, port });
-      this._log(`→ 连接 ${host}:${port}`);
-      this._setConnectingStatus('wifi', `${host}:${port}`);
-    });
-
-    // 断开无线
-    document.getElementById('btn-disconnect-wifi').addEventListener('click', () => {
-      this.ws.send({ cmd: 'disconnect', mode: 'wifi' });
-      this._log('→ 断开');
-    });
-  }
-
-  /** 显示"连接中..."状态 */
-  _setConnectingStatus(mode, info) {
-    const el = document.getElementById('wifi-status');
-    if (!el) return;
-    el.className = 'status connecting';
-    el.textContent = `● ${info} ⏳`;
-  }
-
-  _updateConnection(data) {
-    const el = document.getElementById('wifi-status');
-    const btnConnect = document.getElementById('btn-connect-wifi');
-    const btnDisconnect = document.getElementById('btn-disconnect-wifi');
-    if (data.connected) {
-      const info = `${data.host}:${data.port}`;
-      if (el) { el.className = 'status connected'; el.textContent = `● ${info} ✓`; }
-      if (btnConnect) btnConnect.style.display = 'none';
-      if (btnDisconnect) btnDisconnect.style.display = '';
+    if (mode === 'connected') {
+      dot.className = 'conn-dot connected';
+      ip.textContent = info;
+      btnConnect.style.display = 'none';
+      btnDisconnect.style.display = '';
+    } else if (mode === 'connecting') {
+      dot.className = 'conn-dot connecting';
+      ip.textContent = info;
+      btnConnect.style.display = '';
+      btnDisconnect.style.display = 'none';
     } else {
-      if (el) { el.className = 'status disconnected'; el.textContent = '● 未连接'; }
-      if (btnConnect) btnConnect.style.display = '';
-      if (btnDisconnect) btnDisconnect.style.display = 'none';
-      if (data.error) this._log(`⚠ 连接失败: ${data.error}`);
+      dot.className = 'conn-dot';
+      ip.textContent = '未连接';
+      btnConnect.style.display = '';
+      btnDisconnect.style.display = 'none';
     }
+  }
+
+  _updateStateBadge(stateName) {
+    const badge = document.getElementById('state-badge');
+    if (!badge) return;
+    badge.textContent = stateName;
+    badge.className = 'state-badge';
+    const clsMap = {
+      'IDLE': 'idle', 'MOVING': 'moving',
+      'E-STOP': 'estop', 'ERROR': 'error', 'LOCKED': 'locked',
+    };
+    if (clsMap[stateName]) badge.classList.add(clsMap[stateName]);
+  }
+
+  _updateRTAngles(joints) {
+    for (let i = 0; i < 6; i++) {
+      const rt = document.getElementById(`rt-j${i + 1}`);
+      if (rt) rt.textContent = `J${i + 1}:${joints[i].toFixed(1)}°`;
+      const sj = document.getElementById(`sj${i + 1}`);
+      if (sj) sj.textContent = `J${i + 1}:${joints[i].toFixed(1)}°`;
+    }
+    this._updateTCP();
+  }
+
+  _updateTCP() {
+    const pos = this.arm.getEndEffectorPosition();
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v.toFixed(1); };
+    set('tcp-x', pos.x); set('tcp-y', pos.y); set('tcp-z', pos.z);
+    // 姿态角暂未实现，留占位
+    set('tcp-rx', 0); set('tcp-ry', 0); set('tcp-rz', 0);
+    const stcp = document.getElementById('stcp');
+    if (stcp) stcp.textContent = `TCP:${pos.x.toFixed(0)},${pos.y.toFixed(0)},${pos.z.toFixed(0)}`;
   }
 
   _updateArm(index, value) {
     const angles = this.arm.getJointAngles();
     angles[index] = value;
     this.arm.setJointAngles(angles);
-    this._updateEEPos();
-  }
-
-  _updateEEPos() {
-    const pos = this.arm.getEndEffectorPosition();
-    const el = (id) => document.getElementById(id);
-    if (el('ee-x')) el('ee-x').textContent = pos.x.toFixed(1);
-    if (el('ee-y')) el('ee-y').textContent = pos.y.toFixed(1);
-    if (el('ee-z')) el('ee-z').textContent = pos.z.toFixed(1);
-  }
-
-  _updateRTAngles(joints) {
-    for (let i = 0; i < 6; i++) {
-      const el = document.getElementById(`rt-j${i + 1}`);
-      if (el) el.textContent = `J${i + 1}: ${joints[i].toFixed(1)}°`;
-    }
-    if (this.syncMode) {
-      this.setJointValues(joints);
-    }
+    this._updateTCP();
   }
 
   _sendServo() {
@@ -656,28 +614,28 @@ if (data.stateName && this.stateBadge) {        const colors = { IDLE:'#2ea043',
   setJointValues(angles) {
     for (let i = 0; i < 6; i++) {
       if (this.sliders[i]) this.sliders[i].value = angles[i];
-      if (this.inputs[i]) this.inputs[i].value = angles[i].toFixed(1);
+      const valEl = document.getElementById(`jval-${i}`);
+      if (valEl) valEl.textContent = angles[i].toFixed(1) + '°';
     }
     this.arm.setJointAngles(angles);
-    this._updateEEPos();
+    this._updateTCP();
   }
 
   _setPresets(presets) {
     this.presets = presets;
     const grid = document.getElementById('preset-grid');
-    if (!grid) { console.warn('[UI] preset-grid not found'); return; }
+    if (!grid) return;
     grid.innerHTML = '';
-    console.log('[UI] rendering presets:', Object.keys(presets));
-
     for (const [name, joints] of Object.entries(presets)) {
       const btn = document.createElement('button');
-      btn.className = 'btn btn-secondary btn-preset';
+      btn.className = 'preset-btn';
       btn.textContent = name;
       btn.title = joints.map(j => j.toFixed(1)).join(', ');
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
         this.setJointValues(joints);
         this.ws.send({ cmd: 'preset', name: name });
-        this._log(`→ preset: ${name}`);
+        this._log(`→ ${name}`);
       });
       grid.appendChild(btn);
     }
@@ -692,27 +650,49 @@ if (data.stateName && this.stateBadge) {        const colors = { IDLE:'#2ea043',
     line.textContent = `[${time}] ${text}`;
     area.appendChild(line);
     area.scrollTop = area.scrollHeight;
-    while (area.children.length > 100) {
-      area.removeChild(area.firstChild);
-    }
+    while (area.children.length > 100) area.removeChild(area.firstChild);
   }
 
   bindViewControls(sceneManager) {
     const bind = (id, fn) => {
       const el = document.getElementById(id);
-      if (el) el.addEventListener('click', fn);
+      if (el) el.addEventListener('click', () => fn());
     };
-    bind('btn-grid', () => sceneManager.toggleGrid());
-    bind('btn-axes', () => sceneManager.toggleAxes());
-    bind('btn-reset', () => sceneManager.resetView());
+
+    bind('btn-tool-grid', () => {
+      const show = sceneManager.toggleGrid();
+      document.getElementById('btn-tool-grid').classList.toggle('active', show);
+    });
+
+    bind('btn-tool-axes', () => {
+      const show = sceneManager.toggleAxes();
+      document.getElementById('btn-tool-axes').classList.toggle('active', show);
+    });
+
+    bind('btn-tool-reset', () => sceneManager.resetView());
+
+    bind('btn-tool-floor', () => {
+      this.arm.setInstallMode('floor');
+      document.getElementById('btn-tool-floor').classList.add('active');
+      document.getElementById('btn-tool-wall').classList.remove('active');
+    });
+
+    bind('btn-tool-wall', () => {
+      this.arm.setInstallMode('wall');
+      document.getElementById('btn-tool-wall').classList.add('active');
+      document.getElementById('btn-tool-floor').classList.remove('active');
+    });
+
+    // 复位按钮
+    document.getElementById('btn-reset').addEventListener('click', () => {
+      this.ws.send({ cmd: 'reset' });
+      this._log('→ 复位');
+    });
   }
 }
 
 
-// === app.js ===
-/**
- * App - Main entry point
- */
+// === App Entry ===
 function startApp() {
   console.log('[App] ThirdHand Web Control starting...');
 
@@ -720,55 +700,39 @@ function startApp() {
   const viewport = document.getElementById('three-container');
   const scene = new SceneManager(viewport);
   const arm = new ArmModel(scene.scene);
-  const armPanel = document.getElementById('arm-panel');
-  const bottomPanel = document.getElementById('bottom-panel');
-  const ui = new UIControls(armPanel, bottomPanel, ws, arm);
-
-  // 面板切换按钮
-  const btnToggleConn = document.getElementById('btn-toggle-conn');
-  const btnToggleArm = document.getElementById('btn-toggle-arm');
-  if (btnToggleConn) {
-    btnToggleConn.addEventListener('click', () => {
-      bottomPanel.classList.toggle('hidden');
-      btnToggleConn.classList.toggle('active');
-    });
-  }
-  if (btnToggleArm) {
-    btnToggleArm.addEventListener('click', () => {
-      armPanel.classList.toggle('hidden');
-      btnToggleArm.classList.toggle('active');
-    });
-  }
+  const ui = new UIControls(ws, arm);
 
   // 主题切换
   const themeSelect = document.getElementById('theme-select');
   if (themeSelect) {
-    const saved = localStorage.getItem('theme') || 'dark';
-    if (saved !== 'dark') document.documentElement.setAttribute('data-theme', saved);
+    const saved = localStorage.getItem('theme') || 'deepspace';
+    if (saved !== 'deepspace') {
+      document.documentElement.setAttribute('data-theme', saved);
+    }
     themeSelect.value = saved;
     themeSelect.addEventListener('change', () => {
       const v = themeSelect.value;
-      if (v === 'dark') document.documentElement.removeAttribute('data-theme');
+      if (v === 'deepspace') document.documentElement.removeAttribute('data-theme');
       else document.documentElement.setAttribute('data-theme', v);
       localStorage.setItem('theme', v);
+      // 延迟更新场景背景，等 CSS 变量应用
+      setTimeout(() => scene._updateBgColor(), 50);
     });
   }
 
-  // 等待 URDF 模型加载完成后再构建 UI
   arm.loadingPromise.then(() => {
     ui.build();
     ui.bindViewControls(scene);
     ws.connect();
-    // 默认姿态: 控制值 [0, -90, 90, -90, -90, 0]
+    // 默认姿态
     arm.setJointAngles([0, -90, 90, -90, -90, 0]);
     ui.setJointValues([0, -90, 90, -90, -90, 0]);
-    console.log('[App] URDF model loaded, Ready.');
+    console.log('[App] Ready.');
   }).catch(e => {
     console.error('[App] Model load failed:', e);
   });
 }
 
-// DOM 可能已加载完成 (main.js 是动态加载的)
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', startApp);
 } else {
