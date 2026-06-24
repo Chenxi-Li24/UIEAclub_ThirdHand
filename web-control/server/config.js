@@ -16,18 +16,11 @@ module.exports = {
     }
   },
 
-  // ServoJ 默认参数（acc/vel/filterT/gain 在 SDK 中未启用，仅 cmdT 生效）
+  // ServoJ 默认参数
   servo: {
-    acc: 0,
-    vel: 0,
-    cmdT: 0.016    // 指令周期 16ms（SDK 建议范围 0.001~0.016）
-  },
-
-  // 轨迹插补参数（控制预设位置/关节控制的运动速度）
-  motion: {
-    interval: 16,    // 插补发送间隔 ms
-    steps: 50,       // 插补步数（越大越慢越平滑，50步×16ms=0.8秒）
-    cmdT: 0.016      // ServoJ 指令周期 s
+    acc: 0.006,
+    vel: 0.006,
+    cmdT: 1.0
   },
 
   // 预设位置
