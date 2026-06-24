@@ -315,8 +315,7 @@ class UIControls {
     this.arm = armModel;
     this.sliders = [];
     this.inputs = [];
-    this.liveMode = false;
-    this.syncMode = false;
+    this.syncMode = true;
     this.presets = {};
     this._drawerCollapsed = false;
   }
@@ -355,7 +354,6 @@ class UIControls {
         const val = parseFloat(slider.value);
         valEl.textContent = val.toFixed(1) + '°';
         this._updateArm(i, val);
-        if (this.liveMode) this._sendServo();
       });
     }
 
@@ -393,11 +391,6 @@ class UIControls {
       const zeros = new Array(this.arm.jointNames.length).fill(0);
       this.setJointValues(zeros);
       this._log('→ 回零');
-    });
-
-    // 实时发送
-    document.getElementById('chk-live').addEventListener('change', (e) => {
-      this.liveMode = e.target.checked;
     });
 
     // 同步 3D 模型
