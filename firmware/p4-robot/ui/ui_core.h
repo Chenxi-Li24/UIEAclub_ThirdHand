@@ -6,6 +6,7 @@
 #define UI_W        800
 #define UI_H        1280
 #define UI_TAB_H    80
+#define TAB_COUNT   6   // Dashboard, Control, System, WiFi, About, Voice
 
 // Dark theme palette (RGB565)
 #define UI_BG       0x0000

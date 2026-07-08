@@ -33,6 +33,15 @@
 #include "ui/ui_system.h"
 #include "ui/ui_wifi.h"
 #include "ui/ui_about.h"
+#include "ui/ui_voice.h"
+#if VOICE_ENABLED
+#include "voice/audio_i2c.h"
+#include "voice/asr_client.h"
+#include "voice/voice_cmd.h"
+#include "voice/tts_client.h"
+#include "voice/es8311_driver.h"
+#include "voice/es7210_driver.h"
+#endif
 
 // ── UDP Command Server ──────────────────────────────────────────────
 #define CMD_SERVER_PORT  20008
@@ -209,7 +218,7 @@ void selfTestStart() {
 static void processCmd(const String& line) {
     // ── Immediate commands (not queued) ──────────────────────────
     if (line == "help") {
-        cmdRespond("help | status | test | selftest | servo start | servo end | servo j1 <j1-j6> | estop | reset | heartbeat\r\n");
+        cmdRespond("help | status | test | selftest | servo start | servo end | servo j1 <j1-j6> | estop | reset | heartbeat | tts <text> | asr | listen\r\n");
         return;
     }
 
@@ -279,6 +288,16 @@ static void processCmd(const String& line) {
         return;
     }
 
+    if (line == "listen") {
+#if VOICE_ENABLED
+        voiceCmdStart();
+        cmdRespond("OK: listening...\r\n");
+#else
+        cmdRespond("ERR: VOICE_ENABLED=0\r\n");
+#endif
+        return;
+    }
+
     // servo start — enqueue
     if (line == "servo start") {
         if (!g_state.canMove()) {
@@ -319,6 +338,34 @@ static void processCmd(const String& line) {
         g_cmdQueue.enqueue(e);
         ledSet(0, 255, 0, 32);
         return;  // response sent after execution
+    }
+
+    if (line == "asr") {
+#if VOICE_ENABLED
+        if (!asrGetToken())
+            cmdRespond("ERR: token fetch failed\r\n");
+        else
+            cmdRespondF("OK: token=%s...\r\n", asrToken());
+#else
+        cmdRespond("ERR: VOICE_ENABLED=0\r\n");
+#endif
+        return;
+    }
+
+    if (line.startsWith("tts ")) {
+#if VOICE_ENABLED
+        String text = line.substring(4);
+        text.trim();
+        if (text.length() == 0) {
+            cmdRespond("Usage: tts <text>\r\n");
+        } else {
+            voiceCmdTts(text.c_str());
+            cmdRespondF("OK: TTS \"%s\"\r\n", text.c_str());
+        }
+#else
+        cmdRespond("ERR: VOICE_ENABLED=0\r\n");
+#endif
+        return;
     }
 
     cmdRespondF("Unknown: [%s]\r\n", line.c_str());
@@ -380,6 +427,74 @@ void setup() {
 
     // CNDE state feedback client
     g_cnde.begin(ROBOT_IP, 20005);
+
+    // Voice control subsystem (ES7210 mic + ES8311 amp + ASR + agent relay)
+#if VOICE_ENABLED
+    // Wait for WiFi to connect before NTP (WiFi is async, must be up for NTP)
+    Serial.println("[MAIN] Waiting for WiFi before NTP...");
+    {
+        unsigned long wifiWaitStart = millis();
+        while (!wifiMgrConnected() && (millis() - wifiWaitStart < 15000)) {
+            wifiMgrTick();
+            delay(100);
+        }
+    }
+    if (!wifiMgrConnected()) {
+        Serial.println("[MAIN] WiFi not connected — NTP skipped");
+    } else {
+        // Sync NTP time — required for Aliyun ASR token signature
+        Serial.println("[MAIN] Syncing NTP time...");
+        configTime(0, 0, "ntp.aliyun.com", "pool.ntp.org", "time.nist.gov");
+        unsigned long ntpStart = millis();
+        time_t now;
+        time(&now);
+        while (now < 1700000000 && (millis() - ntpStart < 10000)) {
+            delay(500);
+            time(&now);
+        }
+        if (now > 1700000000) {
+            struct tm ti;
+            gmtime_r(&now, &ti);
+            Serial.printf("[MAIN] NTP synced: %04d-%02d-%02d %02d:%02d:%02d UTC\n",
+                          ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday,
+                          ti.tm_hour, ti.tm_min, ti.tm_sec);
+        } else {
+            Serial.println("[MAIN] NTP sync FAILED — ASR token auth will not work");
+        }
+    }  // end: WiFi connected
+
+    // Init audio I2C bus (shares I2C_NUM_0 with touch, no-op reinit)
+    audioI2cInit(AUDIO_I2C_SDA, AUDIO_I2C_SCL);
+    voiceCmdInit(VOICE_ASR_PROVIDER,
+                 VOICE_ASR_APPKEY, VOICE_ASR_APIKEY, VOICE_ASR_SECRET,
+                 VOICE_AGENT_IP, VOICE_AGENT_PORT);
+
+    // ── Startup voice announcement ─────────────────────────────────────
+    if (es8311Detected()) {
+        const char* token = asrToken();
+        if (token && strlen(token) > 0) {
+            size_t bootSamples = 0;
+            int16_t* bootPcm = ttsSynthesize("Robot online, system ready",
+                                              VOICE_ASR_APPKEY, token, &bootSamples);
+            if (bootPcm && bootSamples > 0) {
+                Serial.printf("[MAIN] Startup TTS: %u samples %.1fs\n",
+                              bootSamples, (float)bootSamples / 16000.0f);
+                // Start I2S RX clock (shared full-duplex) so TX DMA can push data
+                es7210Start();
+                es8311SetVolume(70);
+                es8311Play(bootPcm, bootSamples);
+                es7210Stop();
+                free(bootPcm);
+            } else {
+                Serial.println("[MAIN] Startup TTS: synthesis failed");
+            }
+        } else {
+            Serial.println("[MAIN] Startup TTS: no NLS token — skipping");
+        }
+    } else {
+        Serial.println("[MAIN] Startup TTS: ES8311 not detected — skipping");
+    }
+#endif
 }
 
 // ── Loop ────────────────────────────────────────────────────────────
@@ -433,6 +548,10 @@ void loop() {
     if (Serial.available() > 0) {
         String serLine = Serial.readStringUntil(0x0A);
         serLine.trim();
+        // Strip leading non-printable / garbage bytes (common with serial bridges)
+        while (serLine.length() > 0 && (serLine[0] < 32 || serLine[0] > 126)) {
+            serLine = serLine.substring(1);
+        }
         if (serLine.length() > 0) {
             Serial.printf("[SERIAL] cmd: %s\n", serLine.c_str());
             processCmd(serLine);
@@ -504,10 +623,16 @@ void loop() {
     if (!g_heartbeat.isTimeout() && hbTimedOut) {
         hbTimedOut = false;  // reset on next heartbeat
     }
-    // 5. Self-test tick
+
+    // 5. Voice control tick
+#if VOICE_ENABLED
+    voiceCmdTick();
+#endif
+
+    // 6. Self-test tick
     selfTestTick();
 
-    // 6. LED update (500ms)
+    // 7. LED update (500ms)
     if (now - lastLed > 500) {
         lastLed = now;
         if (stState == ST_MOVE || stState == ST_SETTLE) {
@@ -533,7 +658,7 @@ void loop() {
         }
     }
 
-    // 7. WiFi state change logging
+    // 8. WiFi state change logging
     bool nowConn = wifiMgrConnected();
     if (nowConn != wasConn) {
         if (nowConn) {
@@ -544,7 +669,7 @@ void loop() {
         wasConn = nowConn;
     }
 
-    // 8. CNDE data print + UDP broadcast (500ms)
+    // 9. CNDE data print + UDP broadcast (500ms)
     if (now - lastBeat >= 500) {
         lastBeat = now;
         const RobotStateData& rs = g_cnde.getState();

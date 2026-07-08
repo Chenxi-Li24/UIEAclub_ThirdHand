@@ -7,6 +7,7 @@
 #include "ui/ui_system.h"
 #include "ui/ui_wifi.h"
 #include "ui/ui_about.h"
+#include "ui/ui_voice.h"
 #include <cstdarg>
 #include <cstdio>
 
@@ -25,9 +26,10 @@ static const char* TAB_NAMES[] = {
     LV_SYMBOL_SETTINGS " Control",
     LV_SYMBOL_LIST " System",
     LV_SYMBOL_WIFI " WiFi",
-    LV_SYMBOL_FILE " About"
+    LV_SYMBOL_FILE " About",
+    LV_SYMBOL_AUDIO " Voice"
 };
-#define TAB_COUNT 5
+#define TAB_COUNT 6
 
 static lv_obj_t* s_tabview = nullptr;
 static uint8_t s_current = 0;
@@ -45,6 +47,7 @@ void ui_core_init() {
     tabs[2] = lv_tabview_add_tab(s_tabview, TAB_NAMES[2]);
     tabs[3] = lv_tabview_add_tab(s_tabview, TAB_NAMES[3]);
     tabs[4] = lv_tabview_add_tab(s_tabview, TAB_NAMES[4]);
+    tabs[5] = lv_tabview_add_tab(s_tabview, TAB_NAMES[5]);
 
     // Create page content on each tab (pass correct tab page as parent)
     ui_dashboard_create(tabs[0]);
@@ -52,6 +55,7 @@ void ui_core_init() {
     ui_system_create(tabs[2]);
     ui_wifi_create(tabs[3]);
     ui_about_create(tabs[4]);
+    ui_voice_create(tabs[5]);
 
     // Register refresh callbacks
     s_refreshers[0] = ui_dashboard_refresh;
@@ -59,6 +63,7 @@ void ui_core_init() {
     s_refreshers[2] = ui_system_refresh;
     s_refreshers[3] = ui_wifi_refresh;
     s_refreshers[4] = ui_about_refresh;
+    s_refreshers[5] = ui_voice_refresh;
 
     // Set tab bar style
     lv_obj_t* tabBar = lv_tabview_get_tab_btns(s_tabview);
@@ -70,7 +75,7 @@ void ui_core_init() {
     lv_tabview_set_act(s_tabview, 0, LV_ANIM_OFF);
     s_current = 0;
 
-    Serial.println("[UI] TabView 5 pages ready");
+    Serial.println("[UI] TabView 6 pages ready");
 }
 
 void ui_refresh_all() {
@@ -111,12 +116,13 @@ lv_obj_t* ui_card(lv_obj_t* parent, int x, int y, int w, int h, uint32_t bg_colo
     return b;
 }
 
-void ui_divider(lv_obj_t* parent, int y, int w) {
+lv_obj_t* ui_divider(lv_obj_t* parent, int x, int y, int w) {
     lv_obj_t* d = lv_obj_create(parent);
     lv_obj_set_size(d, w, 2);
-    lv_obj_set_pos(d, 10, y);
+    lv_obj_set_pos(d, x, y);
     lv_obj_set_style_bg_color(d, lv_color_hex(0x3186), 0);
     lv_obj_set_style_border_width(d, 0, 0);
+    return d;
 }
 
 lv_obj_t* ui_tabview() { return s_tabview; }

@@ -36,7 +36,7 @@ bool hwDisplayInitLVGL() {
     s_buf1 = (lv_color_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_SPIRAM);
     s_buf2 = (lv_color_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_SPIRAM);
     if (!s_buf1 || !s_buf2) {
-        Serial.printf("[DISP] PSRAM alloc FAILED (%u bytes)\n", bufBytes);
+        Serial.printf("[DISP] PSRAM alloc FAILED (%u bytes x2)\n", bufBytes);
         return false;
     }
     Serial.printf("[DISP] PSRAM buf1=%p buf2=%p\n", s_buf1, s_buf2);

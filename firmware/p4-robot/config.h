@@ -22,6 +22,18 @@
 #define ENABLE_DISPLAY  1   // JD9365DA MIPI DSI 800×1280
 #define ENABLE_TOUCH    1   // GSL3680 I2C capacitive touch
 
+// ── Voice Control ──────────────────────────────────────────────────
+#define VOICE_ENABLED       1   // 1 = voice enabled (I2C shared with touch on I2C_NUM_0 GPIO7/8)
+#define ENABLE_MIC          1   // 1 = ES7210 mic onboard (⚠ shares 0x40 with GSL3680)
+#define ENABLE_SPEAKER      1   // 1 = ES8311 amp present
+#define VOICE_ASR_PROVIDER  "aliyun"
+#define VOICE_ASR_APPKEY    "YOUR_ALIYUN_NLS_APPKEY"
+#define VOICE_ASR_APIKEY    "YOUR_ALIYUN_ACCESSKEY_ID"
+#define VOICE_ASR_SECRET    "YOUR_ALIYUN_ACCESSKEY_SECRET"
+#define VOICE_AGENT_IP      "192.168.58.11"   // PC running claude_agent.py
+#define VOICE_AGENT_PORT    9000
+#define VOICE_TTS_VOICE     "zhitian_emo"     // TTS voice: zhitian_emo(f) aixia(m) siyue(f)
+
 // ── LED ──────────────────────────────────────────────────────────────
 #define PIN_WS2812      26
 #define LED_BUILTIN      48

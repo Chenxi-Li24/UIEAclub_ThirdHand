@@ -1,0 +1,201 @@
+// es7210_driver.cpp - ES7210 ADC driver: I2C config + ESP-IDF I2S RX DMA
+// JC8012P4A1 onboard dual-MEMS microphone capture
+#include "voice/es7210_driver.h"
+#include <Arduino.h>
+#include <Wire.h>
+#include <driver/i2s_std.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
+// ── I2S handle ────────────────────────────────────────────────────────
+static i2s_chan_handle_t s_rxChan = nullptr;
+
+// ── Ring buffer ───────────────────────────────────────────────────────
+#define RING_BUF_SAMPLES  32768  // 2 seconds @ 16kHz
+static int16_t* s_ringBuf = nullptr;
+static volatile size_t s_ringRead = 0;
+static volatile size_t s_ringWrite = 0;
+static volatile bool s_running = false;
+
+size_t es7210Available() {
+    if (!s_ringBuf || !s_running) return 0;
+    if (s_ringWrite >= s_ringRead)
+        return s_ringWrite - s_ringRead;
+    else
+        return (RING_BUF_SAMPLES - s_ringRead) + s_ringWrite;
+}
+
+// ── I2C helper ────────────────────────────────────────────────────────
+static bool i2cWriteReg(uint8_t addr, uint8_t reg, uint8_t val) {
+    Wire.beginTransmission(addr);
+    Wire.write(reg);
+    Wire.write(val);
+    return Wire.endTransmission() == 0;
+}
+
+// ── ES7210 Register map (datasheet) ───────────────────────────────────
+#define ES7210_RESET         0x00
+#define ES7210_MAIN_CLK      0x02
+#define ES7210_MODE_CFG      0x01
+#define ES7210_ADC_CTL       0x06
+#define ES7210_ADC_CH1_CTL   0x20
+#define ES7210_ADC_CH2_CTL   0x21
+#define ES7210_SDP_CTL1      0x10
+#define ES7210_SDP_CTL2      0x11
+#define ES7210_SDP_MCLK      0x0C
+
+static bool es7210ConfigI2C(int sda, int scl) {
+    Wire.begin(sda, scl);
+    Wire.setClock(100000);
+
+    Wire.beginTransmission(ES7210_ADDR);
+    if (Wire.endTransmission() != 0) {
+        Serial.printf("[ES7210] I2C probe FAIL at 0x%02X\n", ES7210_ADDR);
+        return false;
+    }
+    Serial.printf("[ES7210] I2C probe OK at 0x%02X\n", ES7210_ADDR);
+
+    // Reset device
+    i2cWriteReg(ES7210_ADDR, ES7210_RESET, 0xFF);
+    delay(50);
+    i2cWriteReg(ES7210_ADDR, ES7210_RESET, 0x00);
+    delay(20);
+
+    // Main clock: MCLK = 12.288MHz
+    i2cWriteReg(ES7210_ADDR, ES7210_MAIN_CLK, 0x1F);
+    // Mode: I2S slave, 16-bit
+    i2cWriteReg(ES7210_ADDR, ES7210_MODE_CFG, 0x01);
+    // ADC control: power up, fs=16kHz
+    i2cWriteReg(ES7210_ADDR, ES7210_ADC_CTL, 0x0B);
+    // CH1/CH2 enable with 0dB PGA
+    i2cWriteReg(ES7210_ADDR, ES7210_ADC_CH1_CTL, 0x0F);
+    i2cWriteReg(ES7210_ADDR, ES7210_ADC_CH2_CTL, 0x0F);
+    // Serial data port: standard I2S, 16-bit
+    i2cWriteReg(ES7210_ADDR, ES7210_SDP_CTL1, 0x00);
+    i2cWriteReg(ES7210_ADDR, ES7210_SDP_CTL2, 0x02);
+    // MCLK divider: /2 (12.288 / 2 = 6.144MHz AD clock)
+    i2cWriteReg(ES7210_ADDR, ES7210_SDP_MCLK, 0x02);
+
+    Serial.println("[ES7210] Registers configured");
+    return true;
+}
+
+// ── I2S RX init (ESP-IDF standard I2S driver) ─────────────────────────
+static bool es7210InitI2S(int mclk, int bclk, int lrck, int data, uint32_t sampleRate) {
+    i2s_chan_config_t chanCfg = {};
+    chanCfg.id = I2S_NUM_0;
+    chanCfg.role = I2S_ROLE_MASTER;
+    chanCfg.dma_desc_num = 8;
+    chanCfg.dma_frame_num = 480;  // 30ms @ 16kHz
+    chanCfg.auto_clear = true;
+
+    if (i2s_new_channel(&chanCfg, nullptr, &s_rxChan) != ESP_OK) {
+        Serial.println("[ES7210] I2S channel alloc FAILED");
+        return false;
+    }
+
+    i2s_std_config_t stdCfg = {};
+    stdCfg.clk_cfg.sample_rate_hz = sampleRate;
+    stdCfg.clk_cfg.clk_src = I2S_CLK_SRC_DEFAULT;
+    stdCfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+    stdCfg.slot_cfg.data_bit_width = I2S_DATA_BIT_WIDTH_16BIT;
+    stdCfg.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_16BIT;
+    stdCfg.slot_cfg.slot_mode = I2S_SLOT_MODE_MONO;
+    stdCfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
+    stdCfg.gpio_cfg.mclk = (gpio_num_t)mclk;
+    stdCfg.gpio_cfg.bclk = (gpio_num_t)bclk;
+    stdCfg.gpio_cfg.ws   = (gpio_num_t)lrck;
+    stdCfg.gpio_cfg.din  = (gpio_num_t)data;
+    stdCfg.gpio_cfg.dout = I2S_GPIO_UNUSED;
+    stdCfg.gpio_cfg.invert_flags.mclk_inv = false;
+    stdCfg.gpio_cfg.invert_flags.bclk_inv = false;
+    stdCfg.gpio_cfg.invert_flags.ws_inv   = false;
+
+    if (i2s_channel_init_std_mode(s_rxChan, &stdCfg) != ESP_OK) {
+        Serial.println("[ES7210] I2S std mode init FAILED");
+        return false;
+    }
+
+    Serial.printf("[ES7210] I2S RX ready: %lu Hz, 16-bit mono\n", sampleRate);
+    return true;
+}
+
+// ── Public API ────────────────────────────────────────────────────────
+bool es7210Detected() {
+    Wire.beginTransmission(ES7210_ADDR);
+    return Wire.endTransmission() == 0;
+}
+
+bool es7210Init(int sda, int scl, int mclk, int bclk, int lrck, int data, uint32_t sampleRate) {
+    s_ringBuf = (int16_t*)heap_caps_malloc(RING_BUF_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    if (!s_ringBuf)
+        s_ringBuf = (int16_t*)malloc(RING_BUF_SAMPLES * sizeof(int16_t));
+
+    if (!s_ringBuf) {
+        Serial.println("[ES7210] Ring buffer malloc FAILED");
+        return false;
+    }
+
+    if (!es7210ConfigI2C(sda, scl)) {
+        Serial.println("[ES7210] I2C config FAILED — continuing anyway");
+    }
+
+    if (!es7210InitI2S(mclk, bclk, lrck, data, sampleRate)) {
+        free(s_ringBuf);
+        s_ringBuf = nullptr;
+        return false;
+    }
+
+    Serial.println("[ES7210] Init complete");
+    return true;
+}
+
+bool es7210Start() {
+    if (!s_rxChan || !s_ringBuf) return false;
+    if (s_running) return true;
+
+    s_ringRead = s_ringWrite = 0;
+    s_running = true;
+
+    if (i2s_channel_enable(s_rxChan) != ESP_OK) {
+        s_running = false;
+        return false;
+    }
+    Serial.println("[ES7210] Capture started");
+    return true;
+}
+
+void es7210Stop() {
+    if (!s_running) return;
+    s_running = false;
+    if (s_rxChan) i2s_channel_disable(s_rxChan);
+    Serial.println("[ES7210] Capture stopped");
+}
+
+size_t es7210Read(int16_t* buf, size_t maxSamples) {
+    if (!s_rxChan || !s_running) return 0;
+
+    size_t avail = es7210Available();
+    if (avail == 0) {
+        // Try direct DMA read (non-blocking poll)
+        size_t bytes = 0;
+        esp_err_t err = i2s_channel_read(s_rxChan, buf, maxSamples * sizeof(int16_t), &bytes, 0);
+        if (err == ESP_OK && bytes > 0) return bytes / sizeof(int16_t);
+        return 0;
+    }
+
+    size_t toRead = (avail < maxSamples) ? avail : maxSamples;
+    for (size_t i = 0; i < toRead; i++) {
+        buf[i] = s_ringBuf[s_ringRead];
+        s_ringRead = (s_ringRead + 1) % RING_BUF_SAMPLES;
+    }
+    return toRead;
+}
+
+void es7210Deinit() {
+    es7210Stop();
+    if (s_rxChan) { i2s_del_channel(s_rxChan); s_rxChan = nullptr; }
+    free(s_ringBuf);
+    s_ringBuf = nullptr;
+    Serial.println("[ES7210] Deinit done");
+}

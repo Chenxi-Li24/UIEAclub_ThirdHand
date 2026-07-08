@@ -82,7 +82,8 @@ void wifiMgrTick() {
           s_state = WM_AUTO_CONNECT;
           s_connectStart = now;
           if (s_staticIP) {
-            WiFi.config(s_staticAddr, s_staticGw, s_staticMask);
+            IPAddress dns1(223,5,5,5), dns2(114,114,114,114);
+            WiFi.config(s_staticAddr, s_staticGw, s_staticMask, dns1, dns2);
           }
           WiFi.begin(_wifiSsid, _wifiPass);
         } else {
@@ -117,7 +118,10 @@ void wifiMgrConnectStatic(const char* ssid, const char* pass,
   s_connectStart = millis();
   s_retryCount = 0;
   Serial.printf("[WiFi] Connecting (STATIC %s) to '%s'...\n", ip, ssid);
-  WiFi.config(s_staticAddr, s_staticGw, s_staticMask);
+  // Static IP needs explicit DNS for NTP + ASR/TTS hostname resolution
+  IPAddress dns1(223,5,5,5);     // AliDNS
+  IPAddress dns2(114,114,114,114); // 114DNS
+  WiFi.config(s_staticAddr, s_staticGw, s_staticMask, dns1, dns2);
   WiFi.begin(ssid, pass);
 }
 
@@ -134,7 +138,8 @@ void wifiMgrReconnectStatic(const char* ip, const char* gateway, const char* sub
   s_connectStart = millis();
   s_retryCount = 0;
   Serial.printf("[WiFi] Reconnecting (STATIC %s) to '%s'...\n", ip, wifiCredSsid());
-  WiFi.config(s_staticAddr, s_staticGw, s_staticMask);
+  IPAddress dns1(223,5,5,5), dns2(114,114,114,114);
+  WiFi.config(s_staticAddr, s_staticGw, s_staticMask, dns1, dns2);
   WiFi.begin(_wifiSsid, _wifiPass);
 }
 

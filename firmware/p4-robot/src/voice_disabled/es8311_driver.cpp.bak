@@ -1,0 +1,181 @@
+// es8311_driver.cpp - ES8311 DAC driver: I2C config + I2S TX DMA
+// JC8012P4A1 onboard speaker amplifier output
+#include "voice/es8311_driver.h"
+#include <Arduino.h>
+#include <Wire.h>
+#include <driver/i2s_std.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
+static i2s_chan_handle_t s_txChan = nullptr;
+static bool s_playing = false;
+static uint8_t s_volume = 70;
+
+// ── I2C helper ────────────────────────────────────────────────────────
+static bool i2cWriteReg(uint8_t addr, uint8_t reg, uint8_t val) {
+    Wire.beginTransmission(addr);
+    Wire.write(reg);
+    Wire.write(val);
+    return Wire.endTransmission() == 0;
+}
+
+// ── ES8311 Register map ───────────────────────────────────────────────
+#define ES8311_RESET         0x00
+#define ES8311_CLK_MGR_01    0x01
+#define ES8311_CLK_MGR_02    0x02
+#define ES8311_CLK_MGR_03    0x03
+#define ES8311_CLK_MGR_04    0x04
+#define ES8311_CLK_MGR_05    0x05
+#define ES8311_SDP_CTL       0x10
+#define ES8311_SDP_MGR       0x11
+#define ES8311_DAC_CTL1      0x20
+#define ES8311_DAC_CTL2      0x21
+#define ES8311_DAC_CTL3      0x22
+#define ES8311_DAC_VOL       0x2A
+#define ES8311_SYS_PDN       0x0D
+#define ES8311_GPIO_SEL      0x42
+#define ES8311_GP_EN         0x43
+
+static bool es8311ConfigI2C(int sda, int scl) {
+    Wire.begin(sda, scl);
+    Wire.setClock(100000);
+
+    Wire.beginTransmission(ES8311_ADDR);
+    if (Wire.endTransmission() != 0) {
+        Serial.printf("[ES8311] I2C probe FAIL at 0x%02X\n", ES8311_ADDR);
+        return false;
+    }
+    Serial.printf("[ES8311] I2C probe OK at 0x%02X\n", ES8311_ADDR);
+
+    // Reset codec
+    i2cWriteReg(ES8311_ADDR, ES8311_RESET, 0x3F);
+    delay(10);
+    i2cWriteReg(ES8311_ADDR, ES8311_RESET, 0x00);
+    delay(10);
+
+    // Power up all analog blocks
+    i2cWriteReg(ES8311_ADDR, ES8311_SYS_PDN, 0x00);
+
+    // Clock: MCLK=12.288MHz, BCLK=64*fs, LRCK=fs
+    i2cWriteReg(ES8311_ADDR, ES8311_CLK_MGR_01, 0x0F);
+    i2cWriteReg(ES8311_ADDR, ES8311_CLK_MGR_02, 0x00);
+    i2cWriteReg(ES8311_ADDR, ES8311_CLK_MGR_03, 0x10);
+    i2cWriteReg(ES8311_ADDR, ES8311_CLK_MGR_04, 0x00);
+    i2cWriteReg(ES8311_ADDR, ES8311_CLK_MGR_05, 0x40);
+
+    // Serial data port: I2S format, 16-bit, slave
+    i2cWriteReg(ES8311_ADDR, ES8311_SDP_CTL, 0x00);
+    i2cWriteReg(ES8311_ADDR, ES8311_SDP_MGR, 0x02);
+
+    // DAC: power up, unmute
+    i2cWriteReg(ES8311_ADDR, ES8311_DAC_CTL1, 0x18);
+    i2cWriteReg(ES8311_ADDR, ES8311_DAC_CTL2, 0x02);
+    i2cWriteReg(ES8311_ADDR, ES8311_DAC_CTL3, 0x02);
+
+    // Volume: 0dB (0x00 = max)
+    i2cWriteReg(ES8311_ADDR, ES8311_DAC_VOL, 0x00);
+
+    // GPIO: enable speaker output path
+    i2cWriteReg(ES8311_ADDR, ES8311_GPIO_SEL, 0x08);
+    i2cWriteReg(ES8311_ADDR, ES8311_GP_EN, 0x08);
+
+    Serial.println("[ES8311] Registers configured");
+    return true;
+}
+
+// ── I2S TX init ───────────────────────────────────────────────────────
+static bool es8311InitI2S(int mclk, int bclk, int lrck, int data, uint32_t sampleRate) {
+    i2s_chan_config_t chanCfg = {};
+    chanCfg.id = I2S_NUM_1;
+    chanCfg.role = I2S_ROLE_MASTER;
+    chanCfg.dma_desc_num = 4;
+    chanCfg.dma_frame_num = 480;
+    chanCfg.auto_clear = true;
+
+    if (i2s_new_channel(&chanCfg, &s_txChan, nullptr) != ESP_OK) {
+        Serial.println("[ES8311] I2S TX channel alloc FAILED");
+        return false;
+    }
+
+    i2s_std_config_t stdCfg = {};
+    stdCfg.clk_cfg.sample_rate_hz = sampleRate;
+    stdCfg.clk_cfg.clk_src = I2S_CLK_SRC_DEFAULT;
+    stdCfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+    stdCfg.slot_cfg.data_bit_width = I2S_DATA_BIT_WIDTH_16BIT;
+    stdCfg.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_16BIT;
+    stdCfg.slot_cfg.slot_mode = I2S_SLOT_MODE_MONO;
+    stdCfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
+    stdCfg.gpio_cfg.mclk = (gpio_num_t)mclk;
+    stdCfg.gpio_cfg.bclk = (gpio_num_t)bclk;
+    stdCfg.gpio_cfg.ws   = (gpio_num_t)lrck;
+    stdCfg.gpio_cfg.din  = I2S_GPIO_UNUSED;
+    stdCfg.gpio_cfg.dout = (gpio_num_t)data;
+    stdCfg.gpio_cfg.invert_flags.mclk_inv = false;
+    stdCfg.gpio_cfg.invert_flags.bclk_inv = false;
+    stdCfg.gpio_cfg.invert_flags.ws_inv   = false;
+
+    if (i2s_channel_init_std_mode(s_txChan, &stdCfg) != ESP_OK) {
+        Serial.println("[ES8311] I2S TX std mode init FAILED");
+        return false;
+    }
+
+    Serial.printf("[ES8311] I2S TX ready: %lu Hz, 16-bit mono\n", sampleRate);
+    return true;
+}
+
+// ── Public API ────────────────────────────────────────────────────────
+bool es8311Detected() {
+    Wire.beginTransmission(ES8311_ADDR);
+    return Wire.endTransmission() == 0;
+}
+
+bool es8311Init(int sda, int scl, int mclk, int bclk, int lrck, int data, uint32_t sampleRate) {
+    if (!es8311ConfigI2C(sda, scl))
+        Serial.println("[ES8311] I2C config FAILED — continuing anyway");
+
+    if (!es8311InitI2S(mclk, bclk, lrck, data, sampleRate))
+        return false;
+
+    Serial.println("[ES8311] Init complete");
+    return true;
+}
+
+bool es8311Play(const int16_t* data, size_t samples) {
+    if (!s_txChan) return false;
+
+    esp_err_t err = i2s_channel_enable(s_txChan);
+    if (err != ESP_OK) return false;
+    s_playing = true;
+
+    size_t bytesWritten = 0;
+    i2s_channel_write(s_txChan, data, samples * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+
+    size_t delayMs = (samples * 1000) / 16000 + 50;
+    vTaskDelay(pdMS_TO_TICKS(delayMs));
+
+    i2s_channel_disable(s_txChan);
+    s_playing = false;
+    return true;
+}
+
+void es8311Stop() {
+    if (s_txChan && s_playing)
+        i2s_channel_disable(s_txChan);
+    s_playing = false;
+}
+
+bool es8311IsPlaying() { return s_playing; }
+
+void es8311SetVolume(uint8_t vol) {
+    if (vol > 100) vol = 100;
+    s_volume = vol;
+    // 0x00 = 0dB (max), 0x60 = -48dB (min)
+    uint8_t regVal = (uint8_t)((100 - vol) * 0x60 / 100);
+    i2cWriteReg(ES8311_ADDR, ES8311_DAC_VOL, regVal);
+}
+
+void es8311Deinit() {
+    es8311Stop();
+    if (s_txChan) { i2s_del_channel(s_txChan); s_txChan = nullptr; }
+    Serial.println("[ES8311] Deinit done");
+}

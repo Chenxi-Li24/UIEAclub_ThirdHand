@@ -92,7 +92,7 @@ void jd9365_lcd::begin()
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
         .dpi_clock_freq_mhz = 60,
         .pixel_format = MIPI_DPI_PX_FORMAT,
-        .num_fbs = 1,
+        .num_fbs = 1,  // Video-mode panel: ≥1 framebuffer for continuous DPI stream
         .video_timing = {
             .h_size = 800,
             .v_size = 1280,
@@ -104,7 +104,7 @@ void jd9365_lcd::begin()
             .vsync_front_porch = 20,
         },
         .flags = {
-            .use_dma2d = true,
+            .use_dma2d = true,   // DMA2D for stable PSRAM→internal FB transfer
         },
     };
 
