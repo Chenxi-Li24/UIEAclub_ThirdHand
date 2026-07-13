@@ -13,6 +13,9 @@ module.exports = {
     wifi: {
       host: '192.168.58.100',
       port: 20008
+    },
+    sensor: {
+      port: 20010
     }
   },
 

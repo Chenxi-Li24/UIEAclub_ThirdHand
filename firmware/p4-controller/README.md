@@ -8,7 +8,9 @@ ESP32-P4 (JC8012P4A1) 上的 Arduino 固件，作为 Web/外骨骼与法奥 FR5 
 - **UDP 命令服务器**（端口 20008）：接收 Web/PC/外骨骼的运动指令
 - **Fairino UDP 客户端**（端口 20007）：转发 ServoJ 伺服控制命令到机器人
 - **CNDE TCP 客户端**（端口 20005）：实时回读机器人关节状态
+- **独立 CNDE 网络任务**：TCP 连接与重连运行在 Core 0，机械臂离线不会阻塞 LVGL 触控
 - **状态广播**：周期性（500ms）广播 `JOINTS:` UDP 包给 Web
+- **外骨骼中继**：接收 `EXO:` 六轴角度包，转发到 Web，并在显式启用后驱动 ServoJ
 - **自检流程**：BOOT 按键触发，9 个预设位置依次执行
 
 ### LVGL 屏幕 UI
@@ -156,6 +158,8 @@ arduino-cli monitor -p COMx --config baudrate=115200
 | `servo start` | 进入伺服模式 |
 | `servo end` | 退出伺服模式 |
 | `servo j1 <j1> <j2> <j3> <j4> <j5> <j6>` | 关节控制（6 个角度） |
+| `EXO:seq,a1,...,a6,mv1,...,mv6` | S3 外骨骼六轴角度与电压遥测 |
+| `exo enable` / `exo disable` | 开启/关闭外骨骼驱动机械臂（默认关闭） |
 | `selftest` | 启动自检流程 |
 | `estop` | 急停 |
 | `help` | 命令帮助 |
@@ -181,6 +185,10 @@ CNDE 协议帧：`0x5A5A | count | type | len | data | 0xA5A5`
 JOINTS:j1,j2,j3,j4,j5,j6,state
 ```
 周期 500ms，state ∈ {0:IDLE, 1:MOVING, 2:E-STOP, 3:ERROR, 4:LOCKED}
+
+外骨骼数据以 JSON 转发给 Node 代理，消息类型为 `exoskeleton_state`。P4 分别保存网页代理和 S3 的 UDP 端点，因此 S3 数据不会覆盖网页状态回传地址。外骨骼控制开启后，如果 500ms 内收不到新数据，P4 会自动退出外骨骼控制并结束 ServoJ。
+
+P4 每收到一个合法 `EXO:` 包，都会向 S3 的 UDP 20009 端口回复 `EXO_ACK:seq,controlEnabled`，供 S3 板载 LED 判断完整链路状态。
 
 ## LED 状态指示
 

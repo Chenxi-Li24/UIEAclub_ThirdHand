@@ -398,6 +398,11 @@ class UIControls {
       this.syncMode = e.target.checked;
     });
 
+    document.getElementById('chk-exo-control').addEventListener('change', (e) => {
+      this.ws.send({ cmd: 'exo_control', enabled: e.target.checked });
+      this._log(`→ 外骨骼控制${e.target.checked ? '开启' : '关闭'}`);
+    });
+
     // 抽屉收起/展开
     const drawer = document.getElementById('control-drawer');
     const handle = document.getElementById('drawer-handle');
@@ -517,6 +522,26 @@ class UIControls {
           hb.className = `hb-label ${ok ? 'ok' : 'lost'}`;
         }
       }
+    });
+
+    this.ws.on('exoskeleton_state', (data) => {
+      if (!Array.isArray(data.angles) || !Array.isArray(data.millivolts)) return;
+      for (let i = 0; i < 6; i++) {
+        const channel = document.getElementById(`exo-ch${i + 1}`);
+        if (!channel) continue;
+        channel.querySelector('strong').textContent = `${Number(data.angles[i]).toFixed(1)}°`;
+        channel.querySelector('small').textContent = `${Math.round(Number(data.millivolts[i]))} mV`;
+      }
+      const link = document.getElementById('exo-link');
+      link.textContent = data.source === 'direct' ? '实时 · S3直连' : '实时 · P4中继';
+      link.classList.add('online');
+      document.getElementById('exo-sequence').textContent = `#${data.seq}`;
+      document.getElementById('chk-exo-control').checked = Boolean(data.controlEnabled);
+      clearTimeout(this._exoOfflineTimer);
+      this._exoOfflineTimer = setTimeout(() => {
+        link.textContent = '数据超时';
+        link.classList.remove('online');
+      }, 1000);
     });
 
     this.ws.on('esp32_msg', (data) => {

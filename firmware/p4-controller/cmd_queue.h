@@ -41,6 +41,7 @@ private:
 enum CmdType : uint8_t {
     CMD_NONE = 0,
     CMD_SERVO_MOVE,
+    CMD_EXO_MOVE,
     CMD_SERVO_START,
     CMD_SERVO_END,
     CMD_ESTOP,

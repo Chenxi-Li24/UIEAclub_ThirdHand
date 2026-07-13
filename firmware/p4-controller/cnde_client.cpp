@@ -19,6 +19,7 @@ void CNDEClient::begin(const char* ip, uint16_t port) {
     _connected = false;
     _configured = false;
     _frameCount = 0;
+    if (!_stateMutex) _stateMutex = xSemaphoreCreateMutex();
     memset(&_state, 0, sizeof(_state));
     Serial.printf("[CNDE] target %s:%u fields:\"%s\"\n", ip, port, CNDE_FIELDS);
 }
@@ -116,16 +117,22 @@ void CNDEClient::parseStateData(const uint8_t* data, uint16_t len) {
     memcpy(joints, data, 48);
 
     // 状态字段 (offset 48: rs+ps+mainCode+subCode)
-    if (len >= 56) {
-        _state.robotState   = data[48];
-        _state.programState = data[49];
-        memcpy(&_state.mainCode, data + 50, 4);
-        memcpy(&_state.subCode,  data + 54, 4);
+    RobotStateData updated = {};
+    if (len >= 58) {
+        updated.robotState   = data[48];
+        updated.programState = data[49];
+        memcpy(&updated.mainCode, data + 50, 4);
+        memcpy(&updated.subCode,  data + 54, 4);
     }
 
-    for (int i = 0; i < 6; i++) _state.jointPos[i] = (float)joints[i];
-    _state.valid = true;
-    _state.lastUpdate = millis();
+    for (int i = 0; i < 6; i++) updated.jointPos[i] = (float)joints[i];
+    updated.valid = true;
+    updated.lastUpdate = millis();
+
+    if (_stateMutex && xSemaphoreTake(_stateMutex, portMAX_DELAY) == pdTRUE) {
+        _state = updated;
+        xSemaphoreGive(_stateMutex);
+    }
 
     // 原始hex + 角度 (每200帧打印一次)
     _frameCount++;
@@ -164,6 +171,7 @@ void CNDEClient::tick() {
             } else {
                 Serial.println("[CNDE] connect FAIL");
                 _tcp.stop();
+                _lastConnect = millis();
             }
         }
         return;
@@ -197,9 +205,19 @@ void CNDEClient::tick() {
         _tcp.stop();
         _connected = false;
         _configured = false;
+        _lastConnect = millis();
     }
 }
 
-bool CNDEClient::isConnected() {
-    return _connected && _tcp.connected();
+bool CNDEClient::isConnected() const {
+    return _connected;
+}
+
+RobotStateData CNDEClient::getState() {
+    RobotStateData snapshot = {};
+    if (_stateMutex && xSemaphoreTake(_stateMutex, portMAX_DELAY) == pdTRUE) {
+        snapshot = _state;
+        xSemaphoreGive(_stateMutex);
+    }
+    return snapshot;
 }

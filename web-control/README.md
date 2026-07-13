@@ -4,6 +4,8 @@
 
 ## 架构
 
+外骨骼遥测使用独立直连链路 `S3 → UDP 20010 → Node.js → WebSocket → 浏览器`，不经过 P4。机械臂控制和 CNDE 状态仍使用 P4 链路。
+
 ```
 浏览器 (Three.js)
     │ WebSocket
@@ -42,6 +44,8 @@ npm start
 
 ### 状态监控
 - 实时关节角显示（J1~J6）
+- 外骨骼 6 路校准角度与传感器毫伏值实时显示
+- 外骨骼驱动机械臂安全开关（默认关闭）
 - TCP 末端位置（X/Y/Z/Rx/Ry/Rz）
 - 机器人状态徽章（IDLE/MOVING/E-STOP/ERROR/LOCKED）
 - 心跳指示（hb:OK / hb:LOST）
@@ -96,6 +100,7 @@ module.exports = {
 | `estop` | - | 急停 |
 | `reset` | - | 复位 |
 | `status` | - | 查询状态 |
+| `exo_control` | enabled | 开启/关闭外骨骼驱动机械臂 |
 
 ### 服务端 → 浏览器
 
@@ -104,6 +109,7 @@ module.exports = {
 | `config` | presets, servo, connection | 初始配置 |
 | `connection` | mode, host, port, connected | 连接状态 |
 | `cnde_state` | joints[6], robotState, tcpPos | 实时状态 |
+| `exoskeleton_state` | angles[6], millivolts[6], controlEnabled | 外骨骼实时传感器状态 |
 | `estop` | ts | 急停通知 |
 | `error` | msg | 错误 |
 

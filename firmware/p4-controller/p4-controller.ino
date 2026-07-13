@@ -12,6 +12,7 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <lvgl.h>
+#include <Preferences.h>
 
 #include "pins_config.h"
 #include "config.h"
@@ -19,6 +20,7 @@
 #include "fairino_udp.h"
 #include "cnde_client.h"
 #include "cmd_queue.h"
+#include "exoskeleton_state.h"
 
 #if ENABLE_DISPLAY
 #include "hw/display.h"
@@ -30,9 +32,9 @@
 #include "ui/ui_core.h"
 #include "ui/ui_dashboard.h"
 #include "ui/ui_control.h"
+#include "ui/ui_exoskeleton.h"
 #include "ui/ui_system.h"
 #include "ui/ui_wifi.h"
-#include "ui/ui_about.h"
 
 // ── UDP Command Server ──────────────────────────────────────────────
 #define CMD_SERVER_PORT  20008
@@ -41,6 +43,16 @@
 static WiFiUDP s_cmdServer;
 static IPAddress s_proxyIP;
 static uint16_t s_proxyPort = 0;
+static IPAddress s_exoIP;
+static uint16_t s_exoPort = 0;
+static bool s_exoControlEnabled = false;
+static bool s_exoServoActive = false;
+static uint32_t s_exoLastPacketMs = 0;
+static uint32_t s_exoLastServoMs = 0;
+static uint32_t s_exoLastTargetUpdateMs = 0;
+static float s_exoAcceptedTarget[6];
+static bool s_exoCommandInitialized = false;
+static ExoskeletonTelemetry s_exoTelemetry;
 static bool s_lvglReady = false;
 
 // ── LED (WS2812) ────────────────────────────────────────────────────
@@ -50,11 +62,99 @@ static Adafruit_NeoPixel s_led(1, PIN_WS2812, NEO_RGB + NEO_KHZ800);
 // ── Fairino Client ──────────────────────────────────────────────────
 FairinoUDPClient g_fairino;
 CNDEClient g_cnde;
+static TaskHandle_t s_cndeTaskHandle = nullptr;
+
+static void cndeNetworkTask(void* parameter) {
+    (void)parameter;
+    Serial.printf("[CNDE] network task started on core %d\n", xPortGetCoreID());
+    for (;;) {
+        if (wifiMgrConnected()) {
+            g_cnde.tick();
+            vTaskDelay(pdMS_TO_TICKS(2));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+    }
+}
 
 // ── Command Queue + Heartbeat + State Machine ────────────────────────
 CmdQueue          g_cmdQueue;
 HeartbeatMonitor  g_heartbeat(2000);  // 2s timeout
 RobotStateMachine g_state;
+
+static float normalizeJointAngle(float angle) {
+    while (angle > 180.0f) angle -= 360.0f;
+    while (angle < -180.0f) angle += 360.0f;
+    return angle;
+}
+
+ExoskeletonTelemetry exoskeletonGetTelemetry() {
+    return s_exoTelemetry;
+}
+
+bool exoskeletonControlEnabled() {
+    return s_exoControlEnabled;
+}
+
+bool exoskeletonSetControlEnabled(bool enabled) {
+    if (enabled) {
+        if (!wifiMgrConnected() || !g_state.canMove()) {
+            Serial.println("[EXO] control enable rejected: WiFi or robot not ready");
+            return false;
+        }
+        s_exoControlEnabled = true;
+        Serial.println("[EXO] latched follow enabled; waiting for sensor data");
+        return true;
+    }
+
+    bool wasEnabled = s_exoControlEnabled;
+    s_exoControlEnabled = false;
+    if (wasEnabled) {
+        g_cmdQueue.clear();
+        if (s_exoServoActive) g_fairino.servoMoveEnd();
+        s_exoServoActive = false;
+        s_exoCommandInitialized = false;
+        s_exoLastServoMs = 0;
+        s_exoLastTargetUpdateMs = 0;
+        if (g_state.state() == RSTATE_MOVING) g_state.transition(RSTATE_IDLE);
+        Serial.println("[EXO] latched follow disabled; ServoJ ended");
+    }
+    return false;
+}
+
+bool exoskeletonCalibrateZero() {
+    if (!s_exoTelemetry.valid ||
+        millis() - s_exoTelemetry.lastUpdate > EXO_PACKET_TIMEOUT_MS) return false;
+
+    for (int i = 0; i < 6; ++i) {
+        s_exoTelemetry.zeroOffsets[i] = s_exoTelemetry.angles[i];
+        s_exoTelemetry.robotTargets[i] = 0.0f;
+    }
+    s_exoTelemetry.calibrated = true;
+
+    Preferences preferences;
+    if (preferences.begin("exo-cal", false)) {
+        preferences.putBytes("zero", s_exoTelemetry.zeroOffsets,
+                             sizeof(s_exoTelemetry.zeroOffsets));
+        preferences.putBool("valid", true);
+        preferences.end();
+    }
+    Serial.println("[EXO] current pose calibrated as robot 0 degrees");
+    return true;
+}
+
+static void loadExoskeletonCalibration() {
+    Preferences preferences;
+    if (!preferences.begin("exo-cal", true)) return;
+    bool valid = preferences.getBool("valid", false);
+    if (valid && preferences.getBytesLength("zero") == sizeof(s_exoTelemetry.zeroOffsets)) {
+        preferences.getBytes("zero", s_exoTelemetry.zeroOffsets,
+                             sizeof(s_exoTelemetry.zeroOffsets));
+        s_exoTelemetry.calibrated = true;
+        Serial.println("[EXO] saved zero calibration loaded");
+    }
+    preferences.end();
+}
 
 // ── Self-test state machine ─────────────────────────────────────────
 enum SelfTestState { ST_IDLE, ST_MOVE, ST_SETTLE, ST_DONE, ST_ERROR };
@@ -209,12 +309,12 @@ void selfTestStart() {
 static void processCmd(const String& line) {
     // ── Immediate commands (not queued) ──────────────────────────
     if (line == "help") {
-        cmdRespond("help | status | test | selftest | servo start | servo end | servo j1 <j1-j6> | estop | reset | heartbeat\r\n");
+        cmdRespond("help | status | test | selftest | servo start | servo end | servo j1 <j1-j6> | exo enable | exo disable | estop | reset | heartbeat\r\n");
         return;
     }
 
     if (line == "status") {
-        const RobotStateData& rs = g_cnde.getState();
+        const RobotStateData rs = g_cnde.getState();
         cmdRespondF("state:%s hb:%lu ",
                     g_state.stateName(), g_heartbeat.age());
         if (rs.valid) {
@@ -238,11 +338,28 @@ static void processCmd(const String& line) {
         return;
     }
 
+    if (line == "exo enable") {
+        if (exoskeletonSetControlEnabled(true)) {
+            cmdRespond("OK: exoskeleton control enabled\r\n");
+        } else {
+            cmdRespond("ERR: exoskeleton sensor, WiFi, or robot not ready\r\n");
+        }
+        return;
+    }
+
+    if (line == "exo disable") {
+        exoskeletonSetControlEnabled(false);
+        cmdRespond("OK: exoskeleton control disabled\r\n");
+        return;
+    }
+
     // ── E-STOP: IMMEDIATE — bypass queue, official SDK StopMotion ─
     if (line == "estop") {
         g_cmdQueue.clear();                   // Discard all pending commands
         g_fairino.stopMotion();               // Official SDK: cmdID=102 "STOP" — immediate brake
         g_fairino.servoMoveEnd();             // Also end servo streaming (cmdID=690)
+        s_exoServoActive = false;
+        s_exoControlEnabled = false;
         g_state.force(RSTATE_ESTOP);          // State → E-STOP NOW
         ledSet(255, 0, 0, 64);               // Red LED
         cmdRespond("OK: E-STOP active (immediate, queue cleared)\r\n");
@@ -324,6 +441,115 @@ static void processCmd(const String& line) {
     cmdRespondF("Unknown: [%s]\r\n", line.c_str());
 }
 
+// EXO:sequence,a1..a6,mv1..mv6
+static void processExoskeletonPacket(const String& line) {
+    char data[CMD_BUF_SIZE];
+    line.substring(4).toCharArray(data, sizeof(data));
+
+    float values[13];
+    int count = 0;
+    char* save = nullptr;
+    for (char* token = strtok_r(data, ",", &save); token && count < 13;
+         token = strtok_r(nullptr, ",", &save)) {
+        char* end = nullptr;
+        values[count] = strtof(token, &end);
+        if (end == token || *end != '\0' || !isfinite(values[count])) return;
+        ++count;
+    }
+    if (count != 13) return;
+
+    for (int i = 0; i < 6; ++i) {
+        if (values[i + 1] < -180.0f || values[i + 1] > 180.0f) return;
+        if (values[i + 7] < 0.0f || values[i + 7] > 3600.0f) return;
+    }
+
+    s_exoLastPacketMs = millis();
+    s_exoTelemetry.sequence = (uint32_t)values[0];
+    s_exoTelemetry.lastUpdate = s_exoLastPacketMs;
+    s_exoTelemetry.valid = true;
+    for (int i = 0; i < 6; ++i) {
+        s_exoTelemetry.angles[i] = values[i + 1];
+        s_exoTelemetry.millivolts[i] = values[i + 7];
+        s_exoTelemetry.robotTargets[i] = s_exoTelemetry.calibrated
+            ? normalizeJointAngle(values[i + 1] - s_exoTelemetry.zeroOffsets[i])
+            : values[i + 1];
+    }
+
+    char ack[48];
+    snprintf(ack, sizeof(ack), "EXO_ACK:%lu,%d", (unsigned long)values[0],
+             s_exoControlEnabled ? 1 : 0);
+    s_cmdServer.beginPacket(s_exoIP, s_exoPort);
+    s_cmdServer.write((const uint8_t*)ack, strlen(ack));
+    s_cmdServer.endPacket();
+
+    // Forward telemetry to the Node proxy without mixing it with CNDE feedback.
+    if (s_proxyPort > 0) {
+        char json[384];
+        snprintf(json, sizeof(json),
+                 "{\"type\":\"exoskeleton_state\",\"seq\":%lu,"
+                 "\"angles\":[%.2f,%.2f,%.2f,%.2f,%.2f,%.2f],"
+                 "\"millivolts\":[%.0f,%.0f,%.0f,%.0f,%.0f,%.0f],"
+                 "\"controlEnabled\":%s,\"source\":\"p4\",\"ts\":%lu}",
+                 (unsigned long)values[0],
+                 values[1], values[2], values[3], values[4], values[5], values[6],
+                 values[7], values[8], values[9], values[10], values[11], values[12],
+                 s_exoControlEnabled ? "true" : "false", (unsigned long)millis());
+        s_cmdServer.beginPacket(s_proxyIP, s_proxyPort);
+        s_cmdServer.write((const uint8_t*)json, strlen(json));
+        s_cmdServer.endPacket();
+    }
+
+    if (!s_exoControlEnabled || !g_state.canMove() || !wifiMgrConnected()) return;
+
+    if (!s_exoServoActive) {
+        const RobotStateData robotState = g_cnde.getState();
+        if (!robotState.valid) {
+            Serial.println("[EXO] waiting for valid robot joint feedback");
+            return;
+        }
+        s_exoServoActive = true;
+        s_exoCommandInitialized = true;
+        s_exoLastServoMs = millis() - EXO_COMMAND_INTERVAL_MS;
+        s_exoLastTargetUpdateMs = millis();
+        for (int i = 0; i < 6; ++i) {
+            s_exoAcceptedTarget[i] = robotState.jointPos[i];
+        }
+        g_state.transition(RSTATE_MOVING);
+        Serial.println("[EXO] standalone 2-second ServoJ follow enabled");
+    }
+}
+
+static void exoskeletonServoTick(uint32_t now) {
+    if (!s_exoControlEnabled || !s_exoServoActive || !s_exoCommandInitialized ||
+        !wifiMgrConnected() || !g_state.canMove()) return;
+    if (now - s_exoLastPacketMs > EXO_PACKET_TIMEOUT_MS) return;
+    if (now - s_exoLastTargetUpdateMs >= EXO_TARGET_UPDATE_INTERVAL_MS) {
+        s_exoLastTargetUpdateMs = now;
+        for (int i = 0; i < 6; ++i) {
+            const float targetChange =
+                s_exoTelemetry.robotTargets[i] - s_exoAcceptedTarget[i];
+            if (fabsf(targetChange) >= EXO_TARGET_DEADBAND_DEG) {
+                s_exoAcceptedTarget[i] = s_exoTelemetry.robotTargets[i];
+            }
+        }
+    }
+
+    if (now - s_exoLastServoMs < EXO_COMMAND_INTERVAL_MS) return;
+    s_exoLastServoMs = now;
+
+    int result = g_fairino.servoJ(
+        s_exoAcceptedTarget[0], s_exoAcceptedTarget[1], s_exoAcceptedTarget[2],
+        s_exoAcceptedTarget[3], s_exoAcceptedTarget[4], s_exoAcceptedTarget[5],
+        SELF_TEST_ACC, SELF_TEST_VEL, EXO_SERVO_CMDT, 0, 0);
+    if (result != FR_OK) {
+        Serial.printf("[EXO] smooth ServoJ failed: %d\n", result);
+        g_fairino.servoMoveEnd();
+        s_exoServoActive = false;
+        s_exoCommandInitialized = false;
+        g_state.transition(RSTATE_ERROR);
+    }
+}
+
 
 // --- LVGL periodic UI refresh timer callback -------------------------
 static void uiRefreshTimer(lv_timer_t *timer) {
@@ -341,6 +567,7 @@ void setup() {
     while (!Serial && (millis() - serStart < 3000)) { delay(10); }
     delay(100);
     Serial.println("\n=== ESP32 Fairino Client ===");
+    loadExoskeletonCalibration();
 
     // Button
     pinMode(BOOT_BUTTON, INPUT_PULLUP);
@@ -380,6 +607,11 @@ void setup() {
 
     // CNDE state feedback client
     g_cnde.begin(ROBOT_IP, 20005);
+    BaseType_t cndeTaskResult = xTaskCreatePinnedToCore(
+        cndeNetworkTask, "cnde-net", 8192, nullptr, 2, &s_cndeTaskHandle, 0);
+    if (cndeTaskResult != pdPASS) {
+        Serial.println("[CNDE] ERROR: failed to create network task");
+    }
 }
 
 // ── Loop ────────────────────────────────────────────────────────────
@@ -401,9 +633,6 @@ void loop() {
     // 1. WiFi state machine
     wifiMgrTick();
 
-    // 1b. CNDE state feedback
-    if (wifiMgrConnected()) g_cnde.tick();
-
     // 2. Bind UDP cmd server once WiFi is up
     if (wifiMgrConnected() && !cmdBound) {
         s_cmdServer.begin(CMD_SERVER_PORT);
@@ -415,19 +644,44 @@ void loop() {
     if (cmdBound) {
         int pktSize = s_cmdServer.parsePacket();
         if (pktSize > 0 && pktSize < CMD_BUF_SIZE) {
-            s_proxyIP = s_cmdServer.remoteIP();
-            s_proxyPort = s_cmdServer.remotePort();
+            IPAddress remoteIP = s_cmdServer.remoteIP();
+            uint16_t remotePort = s_cmdServer.remotePort();
             char buf[CMD_BUF_SIZE] = {0};
             int len = s_cmdServer.read((uint8_t*)buf, CMD_BUF_SIZE - 1);
             if (len > 0) {
                 String line(buf);
                 line.trim();
                 if (line.length() > 0) {
-                    processCmd(line);
+                    if (line.startsWith("EXO:")) {
+                        s_exoIP = remoteIP;
+                        s_exoPort = remotePort;
+                        processExoskeletonPacket(line);
+                    } else {
+                        s_proxyIP = remoteIP;
+                        s_proxyPort = remotePort;
+                        processCmd(line);
+                    }
                 }
             }
         }
     }
+
+    // Pause stale motion but keep follow mode latched until the user turns it off.
+    if (s_exoControlEnabled && s_exoLastPacketMs > 0 &&
+        now - s_exoLastPacketMs > EXO_PACKET_TIMEOUT_MS) {
+        if (s_exoServoActive) {
+            g_cmdQueue.clear();
+            g_fairino.servoMoveEnd();
+            s_exoServoActive = false;
+            s_exoCommandInitialized = false;
+            s_exoLastServoMs = 0;
+            s_exoLastTargetUpdateMs = 0;
+            if (g_state.state() == RSTATE_MOVING) g_state.transition(RSTATE_IDLE);
+            Serial.println("[EXO] packet timeout; follow paused, switch remains on");
+        }
+    }
+
+    exoskeletonServoTick(now);
 
     // 3b. Process incoming Serial commands (from web proxy)
     if (Serial.available() > 0) {
@@ -448,21 +702,26 @@ void loop() {
                 g_cmdQueue.clear();                   // Discard remaining queued commands
                 g_fairino.stopMotion();               // Official SDK: cmdID=102 "STOP"
                 g_fairino.servoMoveEnd();             // Also end servo streaming
+                s_exoServoActive = false;
+                s_exoControlEnabled = false;
                 g_state.force(RSTATE_ESTOP);
                 cmdRespondF("OK: E-STOP active (state %s)\r\n", g_state.stateName());
                 ledSet(255, 0, 0, 64);
                 break;
             }
-            case CMD_SERVO_MOVE: {
+            case CMD_SERVO_MOVE:
+            case CMD_EXO_MOVE: {
                 if (g_state.canMove()) {
                     g_state.transition(RSTATE_MOVING);
+                    float commandPeriod = e.type == CMD_EXO_MOVE
+                        ? EXO_SERVO_CMDT : SELF_TEST_CMDT;
                     int r = g_fairino.servoJ(e.joints[0], e.joints[1], e.joints[2],
                                               e.joints[3], e.joints[4], e.joints[5],
-                                              SELF_TEST_ACC, SELF_TEST_VEL, SELF_TEST_CMDT, 0, 0);
+                                              SELF_TEST_ACC, SELF_TEST_VEL, commandPeriod, 0, 0);
                     if (r != FR_OK) {
                         cmdRespondF("ERR: servoJ failed %d\r\n", r);
                         g_state.transition(RSTATE_ERROR);
-                    } else {
+                    } else if (e.type == CMD_SERVO_MOVE) {
                         cmdRespondF("OK: servo j1 → %.1f %.1f %.1f %.1f %.1f %.1f\r\n",
                                     e.joints[0], e.joints[1], e.joints[2],
                                     e.joints[3], e.joints[4], e.joints[5]);
@@ -480,6 +739,7 @@ void loop() {
             }
             case CMD_SERVO_END: {
                 g_fairino.servoMoveEnd();
+                s_exoServoActive = false;
                 if (g_state.state() == RSTATE_MOVING) g_state.transition(RSTATE_IDLE);
                 cmdRespond("OK: servo end\r\n");
                 break;
@@ -491,17 +751,19 @@ void loop() {
 
     // 4b. Heartbeat timeout → auto-estop (one-shot)
     static bool hbTimedOut = false;
-    if (g_heartbeat.isTimeout() && !hbTimedOut) {
+    if (!s_exoControlEnabled && g_heartbeat.isTimeout() && !hbTimedOut) {
         hbTimedOut = true;
         g_cmdQueue.clear();                   // Discard pending commands
         g_fairino.stopMotion();               // Official SDK: cmdID=102 "STOP"
         g_fairino.servoMoveEnd();             // End servo streaming
+        s_exoServoActive = false;
+        s_exoControlEnabled = false;
         g_state.force(RSTATE_ESTOP);
         cmdRespond("ERR: heartbeat timeout → E-STOP\r\n");
         ledSet(255, 0, 0, 64);
         Serial.println("[MAIN] HEARTBEAT TIMEOUT — E-STOP!");
     }
-    if (!g_heartbeat.isTimeout() && hbTimedOut) {
+    if ((!g_heartbeat.isTimeout() || s_exoControlEnabled) && hbTimedOut) {
         hbTimedOut = false;  // reset on next heartbeat
     }
     // 5. Self-test tick
@@ -547,7 +809,7 @@ void loop() {
     // 8. CNDE data print + UDP broadcast (500ms)
     if (now - lastBeat >= 500) {
         lastBeat = now;
-        const RobotStateData& rs = g_cnde.getState();
+        const RobotStateData rs = g_cnde.getState();
         if (rs.valid) {
             Serial.printf("J1:%.1f J2:%.1f J3:%.1f J4:%.1f J5:%.1f J6:%.1f st:%s hb:%lu\n",
                           rs.jointPos[0], rs.jointPos[1], rs.jointPos[2],

@@ -4,9 +4,9 @@
 #include "ui/ui_core.h"
 #include "ui/ui_dashboard.h"
 #include "ui/ui_control.h"
+#include "ui/ui_exoskeleton.h"
 #include "ui/ui_system.h"
 #include "ui/ui_wifi.h"
-#include "ui/ui_about.h"
 #include <cstdarg>
 #include <cstdio>
 
@@ -23,9 +23,9 @@ const lv_font_t* UI_F48 = &lv_font_montserrat_48;
 static const char* TAB_NAMES[] = {
     LV_SYMBOL_HOME " Dashboard",
     LV_SYMBOL_SETTINGS " Control",
+    LV_SYMBOL_CHARGE " Exo",
     LV_SYMBOL_LIST " System",
-    LV_SYMBOL_WIFI " WiFi",
-    LV_SYMBOL_FILE " About"
+    LV_SYMBOL_WIFI " WiFi"
 };
 #define TAB_COUNT 5
 
@@ -49,16 +49,16 @@ void ui_core_init() {
     // Create page content on each tab (pass correct tab page as parent)
     ui_dashboard_create(tabs[0]);
     ui_control_create(tabs[1]);
-    ui_system_create(tabs[2]);
-    ui_wifi_create(tabs[3]);
-    ui_about_create(tabs[4]);
+    ui_exoskeleton_create(tabs[2]);
+    ui_system_create(tabs[3]);
+    ui_wifi_create(tabs[4]);
 
     // Register refresh callbacks
     s_refreshers[0] = ui_dashboard_refresh;
     s_refreshers[1] = ui_control_refresh;
-    s_refreshers[2] = ui_system_refresh;
-    s_refreshers[3] = ui_wifi_refresh;
-    s_refreshers[4] = ui_about_refresh;
+    s_refreshers[2] = ui_exoskeleton_refresh;
+    s_refreshers[3] = ui_system_refresh;
+    s_refreshers[4] = ui_wifi_refresh;
 
     // Set tab bar style
     lv_obj_t* tabBar = lv_tabview_get_tab_btns(s_tabview);

@@ -24,6 +24,39 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 const clients = new Set();
 
+// Direct S3 telemetry keeps the web display independent of the P4 relay.
+const sensorSocket = dgram.createSocket('udp4');
+
+sensorSocket.on('message', (msg, rinfo) => {
+  const text = msg.toString('utf8').trim();
+  if (!text.startsWith('EXO:')) return;
+
+  const values = text.substring(4).split(',').map(Number);
+  if (values.length !== 13 || values.some(value => !Number.isFinite(value))) return;
+  const angles = values.slice(1, 7);
+  const millivolts = values.slice(7, 13);
+  if (angles.some(value => value < -180 || value > 180)) return;
+  if (millivolts.some(value => value < 0 || value > 3600)) return;
+
+  broadcast({
+    type: 'exoskeleton_state',
+    seq: values[0],
+    angles,
+    millivolts,
+    controlEnabled: false,
+    source: 'direct',
+    ts: Date.now()
+  });
+
+  const ack = Buffer.from(`WEB_ACK:${values[0]}`, 'utf8');
+  sensorSocket.send(ack, rinfo.port, rinfo.address);
+});
+
+sensorSocket.on('error', err => console.error('[S3 UDP] error:', err.message));
+sensorSocket.bind(config.connection.sensor.port, '0.0.0.0', () => {
+  console.log(`[S3 UDP] direct telemetry listening on ${config.connection.sensor.port}`);
+});
+
 // ── 传输层抽象 ────────────────────────────────────────────────────
 let transport = null;
 let heartbeatTimer = null;
@@ -247,6 +280,15 @@ async function handleBrowserCommand(msg, ws) {
       break;
     }
 
+    case 'exo_control': {
+      if (!transport || !transport.connected) {
+        ws.send(JSON.stringify({ type: 'error', msg: '未连接到控制板' }));
+        return;
+      }
+      transport.send(msg.enabled ? 'exo enable' : 'exo disable');
+      break;
+    }
+
     case 'ping': {
       ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
       break;
@@ -288,6 +330,7 @@ process.on('SIGINT', () => {
   console.log('\n[shutdown] closing...');
   if (heartbeatTimer) clearInterval(heartbeatTimer);
   if (transport) transport.close();
+  try { sensorSocket.close(); } catch {}
   server.close();
   process.exit(0);
 });

@@ -34,7 +34,7 @@ static void enqueueServoMove(const float* joints) {
 static void jogJoint(int axis, float delta) {
     if (!wifiMgrConnected()) return;
     if (!g_state.canMove()) return;
-    const RobotStateData& rs = g_cnde.getState();
+    const RobotStateData rs = g_cnde.getState();
     float joints[6] = {0};
     if (rs.valid) for (int i = 0; i < 6; i++) joints[i] = rs.jointPos[i];
     joints[axis] += delta;
@@ -100,7 +100,7 @@ static lv_event_cb_t JOG_CALLBACKS[6][2] = {
 
 void ui_control_refresh() {
     if (!scr) return;
-    const RobotStateData& rs = g_cnde.getState();
+    const RobotStateData rs = g_cnde.getState();
     for (int i = 0; i < 6; i++) {
         if (rs.valid) {
             ui_label_setf(w_jogLabels[i], "J%d: %.1f deg", i+1, rs.jointPos[i]);

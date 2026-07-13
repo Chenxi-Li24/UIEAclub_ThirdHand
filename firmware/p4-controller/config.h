@@ -9,6 +9,11 @@
 // ── Robot ────────────────────────────────────────────────────────────
 #define ROBOT_IP        "192.168.58.2"
 #define ROBOT_UDP_PORT  20007
+#define EXO_PACKET_TIMEOUT_MS 1500
+#define EXO_COMMAND_INTERVAL_MS       2000UL
+#define EXO_TARGET_UPDATE_INTERVAL_MS 200
+#define EXO_TARGET_DEADBAND_DEG        1.0f
+#define EXO_SERVO_CMDT                2.0f
 
 // ── Self-test motion parameters ─────────────────────────────────────
 // vel/acc: 暂不开放，传0；cmdT: ServoJ指令周期

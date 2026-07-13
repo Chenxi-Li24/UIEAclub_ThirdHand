@@ -1,4 +1,4 @@
-// ui_system.cpp - Tab 2: System Info
+// ui_system.cpp - System and device information
 #include "ui/ui_system.h"
 #include "ui/ui_core.h"
 #include "wifi_manager.h"
@@ -62,7 +62,7 @@ void ui_system_refresh() {
         wifiMgrConnected() ? "LISTENING" : "---");
 
     // CNDE stats
-    const RobotStateData& rs = g_cnde.getState();
+    const RobotStateData rs = g_cnde.getState();
     if (rs.valid) {
         ui_label_setf(w_cndeFrames, "Last update: %lums ago",
             (unsigned long)(millis() - rs.lastUpdate));
@@ -144,9 +144,24 @@ lv_obj_t* ui_system_create(lv_obj_t* parent) {
     // CNDE stats + Error codes
     y += 160;
     w_cndeFrames = ui_label(scr, 20, y, lw, UI_DIM, UI_F16);
+    lv_label_set_text(w_cndeFrames, "No robot state received");
     y += 30;
     w_errorCode = ui_label(scr, 20, y, lw, UI_GREEN, UI_F20);
 
-    lv_obj_set_height(scr, 1200);
+    // About and hardware details are kept here so connection state has one owner.
+    y += 55;
+    lv_obj_t* aboutCard = ui_card(scr, 20, y, lw, 235, UI_CARD);
+    lv_obj_t* aboutTitle = ui_label(aboutCard, 0, 0, lw - 24, UI_CYAN, UI_F24);
+    lv_label_set_text(aboutTitle, "ThirdHand Controller v2.0");
+
+    lv_obj_t* aboutInfo = ui_label(aboutCard, 0, 38, lw - 24, UI_WHITE, UI_F18);
+    lv_label_set_text(aboutInfo,
+        "ESP32-P4NRW32 + C6-MINI-1U  |  JC8012P4A1\n"
+        "Display: JD9365DA MIPI DSI 800x1280\n"
+        "Touch: GSL3680 I2C  |  LVGL v8.4\n"
+        "Flash: 16 MB  |  PSRAM: 32 MB\n"
+        "UIEAclub  |  ThirdHand Project  |  2026");
+
+    lv_obj_set_height(scr, y + 275);
     return scr;
 }

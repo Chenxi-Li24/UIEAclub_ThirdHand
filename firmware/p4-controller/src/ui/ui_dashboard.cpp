@@ -30,7 +30,7 @@ static void onEstopBtn(lv_event_t* e) {
 
 void ui_dashboard_refresh() {
     if (!scr) return;
-    const RobotStateData& rs = g_cnde.getState();
+    const RobotStateData rs = g_cnde.getState();
 
     // Joint arcs + labels
     for (int i = 0; i < 6; i++) {
@@ -58,6 +58,7 @@ void ui_dashboard_refresh() {
     }
     ui_label_setf(lblState, "%s", g_state.stateName());
     lv_obj_set_style_text_color(lblState, lv_color_hex(stColor), 0);
+
     // Blink E-STOP label
     if (g_state.state() == RSTATE_ESTOP && (millis() / 400) % 2) {
         lv_obj_set_style_text_color(lblState, lv_color_hex(UI_WHITE), 0);

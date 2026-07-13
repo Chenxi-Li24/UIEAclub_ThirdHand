@@ -23,7 +23,7 @@ static const uint32_t FAIL_COOLDOWN_MS   = 30000;
 
 static String s_localIP;
 static int    s_rssi = 0;
-static bool   s_connected = false;
+static volatile bool s_connected = false;
 static bool   s_staticIP = false;
 static IPAddress s_staticAddr, s_staticGw, s_staticMask;
 
