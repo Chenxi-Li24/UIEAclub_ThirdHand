@@ -38,6 +38,10 @@ static uint32_t s_lastSerialPrintMs = 0;
 static uint32_t s_lastWifiAttemptMs = 0;
 static uint32_t s_lastP4AckMs = 0;
 static uint32_t s_lastWebAckMs = 0;
+static uint32_t s_lastP4AckSequence = 0;
+static uint32_t s_lastWebAckSequence = 0;
+static uint32_t s_p4SendFailures = 0;
+static uint32_t s_webSendFailures = 0;
 static bool s_udpBound = false;
 static bool s_p4ControlEnabled = false;
 static bool s_wifiWasConnected = false;
@@ -181,12 +185,17 @@ static void processSerialCommand(String line) {
     return;
   }
   if (line == "net show") {
-    Serial.printf("WiFi:%s IP:%s RSSI:%d UDP:%s WEB_ACK_AGE:%lu P4_ACK_AGE:%lu control:%s\n",
+    Serial.printf("WiFi:%s IP:%s RSSI:%d UDP:%s SEQ:%lu P4_ACK:%lu/%lums WEB_ACK:%lu/%lums TX_FAIL:%lu/%lu control:%s\n",
                   WiFi.status() == WL_CONNECTED ? "OK" : "OFFLINE",
                   WiFi.localIP().toString().c_str(), WiFi.RSSI(),
                   s_udpBound ? "OK" : "OFFLINE",
-                  s_lastWebAckMs == 0 ? ULONG_MAX : millis() - s_lastWebAckMs,
+                  (unsigned long)s_sequence,
+                  (unsigned long)s_lastP4AckSequence,
                   s_lastP4AckMs == 0 ? ULONG_MAX : millis() - s_lastP4AckMs,
+                  (unsigned long)s_lastWebAckSequence,
+                  s_lastWebAckMs == 0 ? ULONG_MAX : millis() - s_lastWebAckMs,
+                  (unsigned long)s_p4SendFailures,
+                  (unsigned long)s_webSendFailures,
                   s_p4ControlEnabled ? "ON" : "OFF");
     return;
   }
@@ -240,6 +249,9 @@ static void processSerialCommand(String line) {
 
 static void connectWifi() {
   WiFi.mode(WIFI_STA);
+  WiFi.persistent(false);
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
 #if USE_STATIC_IP
   IPAddress local;
   IPAddress gateway;
@@ -251,35 +263,43 @@ static void connectWifi() {
 #endif
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   s_lastWifiAttemptMs = millis();
-  Serial.printf("[WiFi] connecting to %s\n", WIFI_SSID);
+  if (Serial && Serial.availableForWrite() >= 48) {
+    Serial.printf("[WiFi] connecting to %s\n", WIFI_SSID);
+  }
 }
 
 static void wifiTick() {
   const bool connected = WiFi.status() == WL_CONNECTED;
   if (connected) {
     if (!s_wifiWasConnected) {
-      Serial.printf("[WiFi] connected IP=%s RSSI=%d\n",
-                    WiFi.localIP().toString().c_str(), WiFi.RSSI());
+      if (Serial && Serial.availableForWrite() >= 64) {
+        Serial.printf("[WiFi] connected IP=%s RSSI=%d\n",
+                      WiFi.localIP().toString().c_str(), WiFi.RSSI());
+      }
       s_wifiWasConnected = true;
     }
     if (!s_udpBound) {
       s_udpBound = s_udp.begin(SENSOR_UDP_PORT) == 1;
-      Serial.printf("[UDP] local port %d: %s\n", SENSOR_UDP_PORT, s_udpBound ? "OK" : "FAILED");
+      if (Serial && Serial.availableForWrite() >= 48) {
+        Serial.printf("[UDP] local port %d: %s\n",
+                      SENSOR_UDP_PORT, s_udpBound ? "OK" : "FAILED");
+      }
     }
     return;
   }
 
   if (s_wifiWasConnected) {
-    Serial.println("[WiFi] disconnected");
+    if (Serial && Serial.availableForWrite() >= 32) Serial.println("[WiFi] disconnected");
     s_wifiWasConnected = false;
     s_lastP4AckMs = 0;
     s_lastWebAckMs = 0;
     if (s_udpBound) s_udp.stop();
     s_udpBound = false;
   }
-  if (millis() - s_lastWifiAttemptMs >= 10000) {
-    WiFi.disconnect();
-    connectWifi();
+  if (millis() - s_lastWifiAttemptMs >= WIFI_RETRY_INTERVAL_MS) {
+    s_lastWifiAttemptMs = millis();
+    WiFi.reconnect();
+    if (Serial && Serial.availableForWrite() >= 40) Serial.println("[WiFi] reconnect requested");
   }
 }
 
@@ -301,19 +321,32 @@ static void receiveLinkAcknowledgements() {
     int controlEnabled = 0;
     if (sscanf(reply, "EXO_ACK:%lu,%d", &sequence, &controlEnabled) == 2) {
       s_lastP4AckMs = millis();
+      s_lastP4AckSequence = sequence;
       s_p4ControlEnabled = controlEnabled != 0;
     } else if (sscanf(reply, "WEB_ACK:%lu", &sequence) == 1) {
       s_lastWebAckMs = millis();
+      s_lastWebAckSequence = sequence;
     }
   }
 }
 
 static void printSensorStatus(uint32_t sequence) {
-  Serial.printf("[EXO] #%lu", static_cast<unsigned long>(sequence));
+  if (!Serial) return;
+
+  char line[320];
+  int used = snprintf(line, sizeof(line), "[EXO] #%lu",
+                      static_cast<unsigned long>(sequence));
   for (int i = 0; i < SENSOR_COUNT; ++i) {
-    Serial.printf(" | J%d=%+.2fdeg (%umV)", i + 1, s_jointDeg[i], s_millivolts[i]);
+    if (used <= 0 || used >= static_cast<int>(sizeof(line))) return;
+    used += snprintf(line + used, sizeof(line) - used,
+                     " | J%d=%+.2fdeg (%umV)",
+                     i + 1, s_jointDeg[i], s_millivolts[i]);
   }
-  Serial.println();
+  if (used <= 0 || used + 1 >= static_cast<int>(sizeof(line))) return;
+  line[used++] = '\n';
+  if (Serial.availableForWrite() >= used) {
+    Serial.write(reinterpret_cast<const uint8_t*>(line), used);
+  }
 }
 
 static void sendExoskeletonPacket() {
@@ -330,11 +363,11 @@ static void sendExoskeletonPacket() {
   if (s_udpBound && used > 0 && used < static_cast<int>(sizeof(packet))) {
     s_udp.beginPacket(s_p4Address, P4_COMMAND_PORT);
     s_udp.write(reinterpret_cast<const uint8_t*>(packet), strlen(packet));
-    s_udp.endPacket();
+    if (s_udp.endPacket() != 1) ++s_p4SendFailures;
 
     s_udp.beginPacket(s_webProxyAddress, WEB_TELEMETRY_PORT);
     s_udp.write(reinterpret_cast<const uint8_t*>(packet), strlen(packet));
-    s_udp.endPacket();
+    if (s_udp.endPacket() != 1) ++s_webSendFailures;
   }
 
   if (millis() - s_lastSerialPrintMs >= SERIAL_PRINT_INTERVAL_MS) {
@@ -359,10 +392,12 @@ void setup() {
   s_webProxyAddress.fromString(WEB_PROXY_IP);
   connectWifi();
 
-  Serial.println("ThirdHand ESP32-S3 six-axis exoskeleton sensor");
-  printHelp();
   sampleSensors();
-  printCalibration();
+  if (Serial) {
+    Serial.println("ThirdHand ESP32-S3 six-axis exoskeleton sensor");
+    printHelp();
+    printCalibration();
+  }
 }
 
 void loop() {

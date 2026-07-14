@@ -37,9 +37,9 @@ static void onControlChanged(lv_event_t* event) {
 static void onCalibrateZero(lv_event_t* event) {
     bool calibrated = exoskeletonCalibrateZero();
     lv_label_set_text(w_calibration,
-        calibrated ? "ZERO CALIBRATED" : "NEEDS LIVE SENSOR DATA");
+        calibrated ? "CAPTURING ZERO - HOLD STILL" : "NEED LIVE DATA / STOP OTHER MOTION");
     lv_obj_set_style_text_color(w_calibration,
-        lv_color_hex(calibrated ? UI_GREEN : UI_RED), 0);
+        lv_color_hex(calibrated ? UI_CYAN : UI_RED), 0);
 }
 
 void ui_exoskeleton_refresh() {
@@ -50,10 +50,12 @@ void ui_exoskeleton_refresh() {
     bool live = telemetry.valid && age <= EXO_PACKET_TIMEOUT_MS;
     bool enabled = exoskeletonControlEnabled();
 
-    lv_label_set_text(w_calibration,
-        telemetry.calibrated ? "ZERO CALIBRATED" : "ZERO NOT CALIBRATED");
+    lv_label_set_text(w_calibration, telemetry.calibrating
+        ? "CAPTURING ZERO - HOLD STILL"
+        : (telemetry.calibrated ? "EXO RELATIVE ZERO SET" : "EXO RELATIVE ZERO NOT SET"));
     lv_obj_set_style_text_color(w_calibration,
-        lv_color_hex(telemetry.calibrated ? UI_GREEN : UI_AMBER), 0);
+        lv_color_hex(telemetry.calibrating ? UI_CYAN
+                     : (telemetry.calibrated ? UI_GREEN : UI_AMBER)), 0);
     lv_label_set_text(w_controlStatus,
         enabled ? (live ? "FOLLOWING" : "WAITING DATA") : (live ? "READY" : "DATA STALE"));
     lv_obj_set_style_text_color(w_controlStatus,
@@ -84,7 +86,9 @@ void ui_exoskeleton_refresh() {
     for (int i = 0; i < 6; ++i) {
         if (telemetry.valid) {
             ui_label_setf(w_angles[i], "%.2f deg", telemetry.angles[i]);
-            ui_label_setf(w_targets[i], "%.2f deg", telemetry.robotTargets[i]);
+            const float displayedTarget = fabsf(telemetry.robotTargets[i]) < 0.05f
+                ? 0.0f : telemetry.robotTargets[i];
+            ui_label_setf(w_targets[i], "%.2f deg", displayedTarget);
             ui_label_setf(w_voltages[i], "%.3f V  |  %.0f mV",
                           telemetry.millivolts[i] / 1000.0f, telemetry.millivolts[i]);
             lv_bar_set_value(w_voltageBars[i], (int32_t)telemetry.millivolts[i], LV_ANIM_OFF);
@@ -188,12 +192,12 @@ lv_obj_t* ui_exoskeleton_create(lv_obj_t* parent) {
     lv_obj_set_style_radius(calibrate, 8, 0);
     lv_obj_add_event_cb(calibrate, onCalibrateZero, LV_EVENT_CLICKED, nullptr);
     lv_obj_t* calibrateLabel = lv_label_create(calibrate);
-    lv_label_set_text(calibrateLabel, "SET CURRENT EXO POSE AS ROBOT ZERO");
+    lv_label_set_text(calibrateLabel, "SET CURRENT EXO POSE AS RELATIVE ZERO");
     lv_obj_set_style_text_font(calibrateLabel, UI_F18, 0);
     lv_obj_center(calibrateLabel);
 
     w_calibration = ui_label(scr, pageMargin, 945, contentW, UI_AMBER, UI_F16);
-    lv_label_set_text(w_calibration, "ZERO NOT CALIBRATED");
+    lv_label_set_text(w_calibration, "EXO RELATIVE ZERO NOT SET");
     lv_obj_set_style_text_align(w_calibration, LV_TEXT_ALIGN_CENTER, 0);
 
     lv_obj_t* safety = ui_label(scr, pageMargin, 975, contentW, UI_DIM, UI_F16);

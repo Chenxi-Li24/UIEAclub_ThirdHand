@@ -19,11 +19,15 @@ module.exports = {
     }
   },
 
-  // ServoJ 默认参数
+  // P4 SafeServoMotion 实际参数（网页仅用于展示）
   servo: {
-    acc: 0.006,
-    vel: 0.006,
-    cmdT: 1.0
+    acc: 0,
+    vel: 0,
+    cmdT: 0.016,
+    commandSpeedDegS: 10,
+    hardSpeedLimitDegS: 20,
+    maxAccelerationDegS2: 10,
+    maxJerkDegS3: 80
   },
 
   // 预设位置

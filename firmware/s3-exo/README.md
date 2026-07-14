@@ -57,9 +57,10 @@ s3-exo/
     │   ├── power.*             # 18650 电池 ADC
     │   ├── melody.*            # RTTTL 旋律播放
     │   └── pins.h              # 引脚定义
-    ├── robot/                  # 机器人层（经 P4 转发）
-    │   ├── fairino_udp.*       # 法奥 UDP 帧协议（发往 P4 的 20008）
-    │   └── cnde_client.*       # CNDE 状态回读（经 P4 转发）
+    ├── robot/                  # 机器人协议层
+    │   ├── fairino_udp.*       # 法奥 UDP 帧协议（端口 20007）
+    │   ├── safe_motion.*       # 16ms S 曲线插补 + 分轴限速 + 20°/s 硬限速
+    │   └── cnde_client.*       # CNDE 状态回读（端口 20005）
     ├── ui/                     # LVGL GUI（5 页滑屏）
     │   ├── ui_core.*           # 屏幕管理器
     │   ├── ui_home.*           # 主页：6 轴关节角 + CNDE + WiFi
@@ -83,19 +84,22 @@ s3-exo/
 #define ROBOT_IP        "192.168.58.2"
 #define ROBOT_UDP_PORT  20007
 
-#define SELF_TEST_CMDT      2.0f
 #define SELF_TEST_SETTLE_MS 5000
 #define SELF_TEST_TIMEOUT   300000
 ```
+
+所有 Jog、UDP 目标与自检动作都通过 `SafeServoMotion` 下发：`cmdT=0.016s`，J1 指令速度/加速度限制为 `5°/s`、`5°/s²`，J2-J6 为 `10°/s`、`10°/s²`，最终硬限制 `20°/s`，并限制加加速度。SDK 未开放的 `acc`、`vel`、`filterT`、`gain` 固定为 `0`。
 
 ## 通信端口
 
 | 端口 | 协议 | 方向 | 用途 |
 |---|---|---|---|
 | 80 | HTTP | 入站 | Web API + REST |
-| 20008 | UDP | 出站 → P4 控制终端 | ServoJ 伺服命令 / 自检 / 状态查询（由 P4 转发至机器人） |
+| 20005 | TCP | 入站 ← 法奥控制器 | CNDE 关节状态回读 |
+| 20007 | UDP | 出站 → 法奥控制器 | 安全插补后的 ServoJ 指令 |
+| 20008 | UDP | 入站 | 控制命令服务器 |
 
-> S3 外骨骼不直接连接法奥机器人，所有机器人命令统一发送至 P4 控制终端（UDP 20008），由 P4 转发并回读 CNDE 状态。
+> 当前 `s3-exo` 是可直连法奥控制器的旧控制终端；主系统仍建议使用 `p4-controller` 作为唯一机器人控制入口。
 
 ## 编译烧录
 

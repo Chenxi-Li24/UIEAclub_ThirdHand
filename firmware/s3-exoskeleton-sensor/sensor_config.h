@@ -23,12 +23,13 @@
 #define RGB_LED_BRIGHTNESS  24
 #define P4_ACK_TIMEOUT_MS   1000
 #define WEB_ACK_TIMEOUT_MS  1000
+#define WIFI_RETRY_INTERVAL_MS 2000
 
 #define SENSOR_COUNT        6
 #define ADC_FULL_SCALE_MV   3300.0f
 #define ADC_SAMPLE_COUNT    16
 #define SEND_INTERVAL_MS    50
-#define SERIAL_PRINT_INTERVAL_MS 200
+#define SERIAL_PRINT_INTERVAL_MS 1000
 
 // One Euro angle filter. Lower min cutoff removes more idle jitter; higher
 // beta follows fast motion more closely.

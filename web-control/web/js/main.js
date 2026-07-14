@@ -318,6 +318,7 @@ class UIControls {
     this.syncMode = true;
     this.presets = {};
     this._drawerCollapsed = false;
+    this._lastFairinoError = '';
   }
 
   build() {
@@ -385,12 +386,12 @@ class UIControls {
       this._log('→ E-STOP');
     });
 
-    // 回零
+    // Move to the all-zero joint pose; this does not redefine robot calibration.
     document.getElementById('btn-home').addEventListener('click', () => {
       this.arm.goHome();
       const zeros = new Array(this.arm.jointNames.length).fill(0);
       this.setJointValues(zeros);
-      this._log('→ 回零');
+      this._log('→ 六轴 0° 姿态（不修改机械臂零点）');
     });
 
     // 同步 3D 模型
@@ -521,6 +522,15 @@ class UIControls {
           hb.textContent = ok ? 'hb:OK' : 'hb:LOST';
           hb.className = `hb-label ${ok ? 'ok' : 'lost'}`;
         }
+      }
+      const mainCode = Number(data.mainCode || 0);
+      const subCode = Number(data.subCode || 0);
+      const errorKey = `${mainCode}/${subCode}`;
+      if ((mainCode !== 0 || subCode !== 0) && errorKey !== this._lastFairinoError) {
+        this._lastFairinoError = errorKey;
+        this._log(`Fairino alarm: main=${mainCode}, sub=${subCode}`);
+      } else if (mainCode === 0 && subCode === 0) {
+        this._lastFairinoError = '';
       }
     });
 

@@ -79,7 +79,7 @@ web-control/
 ```js
 module.exports = {
   esp32: { host: '192.168.58.100', port: 20008 },
-  servo: { acc: 0.006, vel: 0.006, cmdT: 1.0 },
+  servo: { acc: 0, vel: 0, cmdT: 0.016, commandSpeedDegS: 10, hardSpeedLimitDegS: 20 },
   presets: {
     home:  [0, -90, 90, -90, -90, 0],
     test1: [30, -70, -90, -80, 90, 0],

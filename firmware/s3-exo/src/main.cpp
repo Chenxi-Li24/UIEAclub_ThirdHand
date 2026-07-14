@@ -15,6 +15,7 @@
 #include "config.h"
 #include "wifi_manager.h"
 #include "robot/fairino_udp.h"
+#include "robot/safe_motion.h"
 #include "robot/cnde_client.h"
 #include "web_server.h"
 #include "ui/ui_core.h"
@@ -90,7 +91,30 @@ static void ledBreath(uint8_t r, uint8_t g, uint8_t b) {
 //  Robot Globals (instantiated here, externed in fairino_udp.h / cnde_client.h)
 // ═══════════════════════════════════════════════════════════════════════
 FairinoUDPClient g_fairino;
+SafeServoMotion g_safeMotion;
 CNDEClient g_cnde;
+
+static bool robotFeedbackFresh(const RobotStateData& state) {
+  return state.valid && millis() - state.lastUpdate <= 500;
+}
+
+bool safeMotionSetTarget(const float joints[6], bool continuous) {
+  if (!wifiMgrConnected()) return false;
+  const RobotStateData& robotState = g_cnde.getState();
+  if (!robotFeedbackFresh(robotState)) return false;
+  return g_safeMotion.setTarget(joints, robotState.jointPos, continuous) == FR_OK;
+}
+
+bool safeMotionStartHold() {
+  const RobotStateData& robotState = g_cnde.getState();
+  if (!wifiMgrConnected() || !robotFeedbackFresh(robotState)) return false;
+  return g_safeMotion.setTarget(
+    robotState.jointPos, robotState.jointPos, true) == FR_OK;
+}
+
+void safeMotionStop() {
+  g_safeMotion.stop();
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 //  UDP Command Server (port 20008)
@@ -136,11 +160,10 @@ static const float SELF_TEST_POS[][6] = {
 };
 static const int SELF_TEST_COUNT = sizeof(SELF_TEST_POS) / sizeof(SELF_TEST_POS[0]);
 
-static void selfTestSendTarget() {
-  if (stSegment < 0 || stSegment >= SELF_TEST_COUNT) return;
+static bool selfTestSendTarget() {
+  if (stSegment < 0 || stSegment >= SELF_TEST_COUNT) return false;
   const float* t = SELF_TEST_POS[stSegment];
-  g_fairino.servoJ(t[0], t[1], t[2], t[3], t[4], t[5],
-                   SELF_TEST_ACC, SELF_TEST_VEL, SELF_TEST_CMDT, 0, 0);
+  return safeMotionSetTarget(t, false);
 }
 
 static void selfTestTick() {
@@ -148,18 +171,17 @@ static void selfTestTick() {
   switch (stState) {
   case ST_IDLE: return;
   case ST_MOVE:
-    selfTestSendTarget();
-    delay((int)(SELF_TEST_CMDT * 1000));
-    stState = ST_SETTLE;
-    stSettleStart = now;
+    if (selfTestSendTarget()) {
+      stState = ST_SETTLE;
+      stSettleStart = 0;
+    }
     break;
   case ST_SETTLE:
-    selfTestSendTarget();
-    delay((int)(SELF_TEST_CMDT * 1000));
+    if (g_safeMotion.active()) break;
+    if (stSettleStart == 0) stSettleStart = now;
     if (now - stSettleStart >= (unsigned long)SELF_TEST_SETTLE_MS) {
       stSegment++;
       if (stSegment >= SELF_TEST_COUNT) {
-        g_fairino.servoMoveEnd();
         stState = ST_DONE;
         ledSet(0, 0, 0, 0);
         Serial.println("[SELF-TEST] DONE");
@@ -173,7 +195,7 @@ static void selfTestTick() {
   }
   if (stState == ST_MOVE || stState == ST_SETTLE) {
     if (now - stStartTime > SELF_TEST_TIMEOUT) {
-      g_fairino.servoMoveEnd();
+      g_safeMotion.stop();
       stState = ST_ERROR;
       Serial.println("[SELF-TEST] TIMEOUT");
       webLog("SELF-TEST: TIMEOUT");
@@ -194,8 +216,6 @@ void selfTestStart() {
   }
   Serial.printf("[SELF-TEST] Starting %d positions\n", SELF_TEST_COUNT);
   webLog("SELF-TEST: starting %d positions", SELF_TEST_COUNT);
-  g_fairino.servoMoveStart();
-  delay(50);
   stSegment = 0;
   stState = ST_MOVE;
   stStartTime = millis();
@@ -238,12 +258,12 @@ static void processCmd(const String& line) {
   }
   if (line == "servo start") {
     if (!wifiMgrConnected()) { cmdRespond("ERR: no WiFi\r\n"); return; }
-    g_fairino.servoMoveStart();
-    cmdRespond("OK: servo start\r\n");
+    if (safeMotionStartHold()) cmdRespond("OK: safe servo hold started\r\n");
+    else cmdRespond("ERR: robot feedback unavailable\r\n");
     return;
   }
   if (line == "servo end") {
-    g_fairino.servoMoveEnd();
+    safeMotionStop();
     cmdRespond("OK: servo end\r\n");
     return;
   }
@@ -254,9 +274,8 @@ static void processCmd(const String& line) {
     int n = sscanf(line.c_str(), "servo j1 %f %f %f %f %f %f",
                    &joints[0], &joints[1], &joints[2], &joints[3], &joints[4], &joints[5]);
     if (n < 6) { cmdRespond("Usage: servo j1 <j1> <j2> <j3> <j4> <j5> <j6>\r\n"); return; }
-    int r = g_fairino.servoJ(joints[0], joints[1], joints[2], joints[3], joints[4], joints[5],
-                              SELF_TEST_ACC, SELF_TEST_VEL, SELF_TEST_CMDT, 0, 0);
-    if (r != FR_OK) { cmdRespondF("ERR: servoJ failed %d\r\n", r); }
+    bool started = safeMotionSetTarget(joints, false);
+    if (!started) { cmdRespond("ERR: safe servo motion failed\r\n"); }
     else { cmdRespondF("OK: servo j1 -> %.1f %.1f %.1f %.1f %.1f %.1f\r\n",
                         joints[0], joints[1], joints[2], joints[3], joints[4], joints[5]); }
     ledSet(0, 255, 0, 32);
@@ -374,6 +393,7 @@ void setup() {
   // 11. Fairino UDP + CNDE (non-blocking begin, will connect once WiFi is up)
   g_fairino.begin();
   g_fairino.setTarget(ROBOT_IP, ROBOT_UDP_PORT);
+  g_safeMotion.begin(&g_fairino);
   Serial.printf("[BOOT] Fairino UDP target: %s:%d\n", ROBOT_IP, ROBOT_UDP_PORT);
 
   g_cnde.begin(ROBOT_IP, 20005);
@@ -469,6 +489,13 @@ void loop() {
   // 9. Self-test state machine advance
   selfTestTick();
 
+  int motionResult = g_safeMotion.tick();
+  if (motionResult != FR_OK) {
+    Serial.printf("[SAFE-MOTION] ServoJ stream failed: %d\n", motionResult);
+    webLog("SAFE-MOTION failed: %d", motionResult);
+    if (stState == ST_MOVE || stState == ST_SETTLE) stState = ST_ERROR;
+  }
+
   // 10. IMU read (1 Hz)
   if (now - lastImu >= 1000) {
     lastImu = now;
@@ -488,5 +515,5 @@ void loop() {
     wasConn = nowConn;
   }
 
-  delay(5);
+  delay(1);
 }

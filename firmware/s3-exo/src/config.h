@@ -11,10 +11,7 @@
 #define ROBOT_IP        "192.168.58.2"
 #define ROBOT_UDP_PORT  20007
 
-// Self-test motion parameters
-#define SELF_TEST_ACC       0.0f
-#define SELF_TEST_VEL       0.0f
-#define SELF_TEST_CMDT      2.0f
+// Motion is interpolated at 16 ms with a 20 deg/s hard limit.
 #define SELF_TEST_SETTLE_MS 5000
 #define SELF_TEST_TIMEOUT   300000
 
@@ -23,3 +20,6 @@
 
 // Self-test entry point (defined in main.cpp, called from ui_robot.cpp)
 extern void selfTestStart();
+extern bool safeMotionSetTarget(const float joints[6], bool continuous = false);
+extern bool safeMotionStartHold();
+extern void safeMotionStop();

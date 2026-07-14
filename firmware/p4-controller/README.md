@@ -48,6 +48,7 @@ p4-controller/
 ├── lv_conf.h                # LVGL 8.4 配置（800×1280, RGB565）
 ├── cmd_queue.h              # 命令队列 + 心跳监控 + 状态机
 ├── fairino_udp.{cpp,h}      # Fairino UDP 帧协议客户端（端口 20007）
+├── safe_motion.{cpp,h}      # 16ms S 曲线插补 + 分轴限速 + 20°/s 硬限速
 ├── cnde_client.{cpp,h}      # CNDE TCP 客户端（端口 20005），回读关节状态
 ├── wifi_manager.{cpp,h}     # WiFi 状态机，静态 IP 连接
 ├── hw/
@@ -88,8 +89,9 @@ p4-controller/
 #define ROBOT_IP        "192.168.58.2"
 #define ROBOT_UDP_PORT  20007
 
-// 自检运动参数
-#define SELF_TEST_CMDT      2.0f    // ServoJ 指令周期 (秒)
+// 外骨骼与自检参数；ServoJ 固定以 16ms 周期安全插补
+#define EXO_PACKET_TIMEOUT_MS 1500
+#define EXO_ZERO_CAPTURE_MS   1200
 #define SELF_TEST_SETTLE_MS 5000    // 每个位置停留时间
 #define SELF_TEST_TIMEOUT   300000  // 自检总超时 (5min)
 
@@ -174,10 +176,17 @@ Fairino 帧格式：`/f/bIII{count}III{cmdID}III{len}III{content}III/b/f`
 | `CMD_SERVO_MOVE_START = 689` | 进入伺服模式 |
 | `CMD_SERVO_MOVE_END = 690` | 退出伺服模式 |
 
+所有运动目标先由 `SafeServoMotion` 从 CNDE 实际关节角开始插补，再由独立高优先级 FreeRTOS 网络任务按官方 UDP 示例连续下发。`cmdT=0.016s`，J1 限制为 `5°/s`、`5°/s²`，J2-J6 限制为 `10°/s`、`10°/s²`，最终硬限制 `20°/s`；软件同时限制加加速度。外骨骼目标按每个新序列包更新，不再使用 200ms 节拍和 1° 目标死区。SDK 中未开放的 `acc`、`vel`、`filterT`、`gain` 均固定为 `0`。
+
+“外骨骼相对零位”只保存六轴传感器角度偏移到 P4 NVS，不调用机器人零点标定接口。按钮会自动关闭外骨骼跟随；存在其他运动时会拒绝校准。
+点击 P4 的相对零位按钮会自动关闭外骨骼跟随，并在 1.2 秒内持续跟踪仍在收敛的传感器滤波值；保持姿态不动即可一次完成稳定零位采集。
+
+外骨骼包在主循环内接收后，超时判断必须重新读取当前时间，不能复用收包前缓存的 `millis()`；否则无符号时间差会下溢，并把刚收到的包误判为超时，造成 ServoJ 反复启停。
+
 ### 机器人 → ESP32（TCP 20005）
 
 CNDE 协议帧：`0x5A5A | count | type | len | data | 0xA5A5`
-- data 含 6×double 关节角 + 机器人状态
+- data 含 6×double 关节角、机器人状态及 `mainCode/subCode` 报警码；非零报警会停止当前安全运动
 
 ### ESP32 → Web（UDP 广播）
 
@@ -186,7 +195,7 @@ JOINTS:j1,j2,j3,j4,j5,j6,state
 ```
 周期 500ms，state ∈ {0:IDLE, 1:MOVING, 2:E-STOP, 3:ERROR, 4:LOCKED}
 
-外骨骼数据以 JSON 转发给 Node 代理，消息类型为 `exoskeleton_state`。P4 分别保存网页代理和 S3 的 UDP 端点，因此 S3 数据不会覆盖网页状态回传地址。外骨骼控制开启后，如果 500ms 内收不到新数据，P4 会自动退出外骨骼控制并结束 ServoJ。
+外骨骼数据以 JSON 转发给 Node 代理，消息类型为 `exoskeleton_state`。P4 分别保存网页代理和 S3 的 UDP 端点，因此 S3 数据不会覆盖网页状态回传地址。外骨骼控制开启后，如果 1500ms 内收不到新数据，P4 会暂停跟随并结束当前 ServoJ 流，但保留网页上的跟随开关状态。
 
 P4 每收到一个合法 `EXO:` 包，都会向 S3 的 UDP 20009 端口回复 `EXO_ACK:seq,controlEnabled`，供 S3 板载 LED 判断完整链路状态。
 

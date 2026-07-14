@@ -19,8 +19,7 @@ static void jogJoint(int axis, float delta) {
     for (int i = 0; i < 6; i++) joints[i] = rs.jointPos[i];
   }
   joints[axis] += delta;
-  g_fairino.servoJ(joints[0], joints[1], joints[2], joints[3], joints[4], joints[5],
-                   SELF_TEST_ACC, SELF_TEST_VEL, SELF_TEST_CMDT, 0, 0);
+  safeMotionSetTarget(joints, false);
 }
 
 // Jog button callbacks
@@ -47,10 +46,10 @@ static void onSelfTest(lv_event_t* e) {
 // Quick commands
 static void onServoStart(lv_event_t* e) {
   if (!wifiMgrConnected()) return;
-  g_fairino.servoMoveStart();
+  safeMotionStartHold();
 }
 static void onServoEnd(lv_event_t* e) {
-  g_fairino.servoMoveEnd();
+  safeMotionStop();
 }
 static void onTimingTest(lv_event_t* e) {
   if (!wifiMgrConnected()) return;

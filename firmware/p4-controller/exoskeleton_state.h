@@ -11,6 +11,7 @@ struct ExoskeletonTelemetry {
     uint32_t lastUpdate = 0;
     bool valid = false;
     bool calibrated = false;
+    bool calibrating = false;
 };
 
 ExoskeletonTelemetry exoskeletonGetTelemetry();

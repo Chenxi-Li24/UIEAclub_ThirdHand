@@ -4,6 +4,7 @@
 #include "ui/ui_core.h"
 #include "wifi_manager.h"
 #include "fairino_udp.h"
+#include "safe_motion.h"
 #include "cnde_client.h"
 #include "cmd_queue.h"
 #include "config.h"
@@ -15,6 +16,7 @@ static float jogDelta = 5.0f;
 
 extern CNDEClient g_cnde;
 extern FairinoUDPClient g_fairino;
+extern SafeServoMotion g_safeMotion;
 extern CmdQueue g_cmdQueue;
 extern RobotStateMachine g_state;
 extern void selfTestStart();
@@ -70,7 +72,9 @@ static void onServoEnd(lv_event_t* e) {
 }
 
 static void onTimingTest(lv_event_t* e) {
-    if (wifiMgrConnected() && g_state.canMove()) g_fairino.servoTimingTest();
+    if (wifiMgrConnected() && g_state.canMove() && !g_safeMotion.active()) {
+        g_fairino.servoTimingTest();
+    }
 }
 
 static void onDeltaUp(lv_event_t* e)   { if (jogDelta < 20.0f) jogDelta += 1.0f; }

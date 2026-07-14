@@ -135,6 +135,11 @@ async function connectWifi(opts) {
             robotState: state,
             stateName: stateNames[state] || '???',
             heartbeatAge: hbAge,
+            fairinoRobotState: parts.length >= 12 ? parts[8] : undefined,
+            programState: parts.length >= 12 ? parts[9] : undefined,
+            mainCode: parts.length >= 12 ? parts[10] : 0,
+            subCode: parts.length >= 12 ? parts[11] : 0,
+            hasError: parts.length >= 12 && (parts[10] !== 0 || parts[11] !== 0),
             ts: Date.now()
           });
           return;
