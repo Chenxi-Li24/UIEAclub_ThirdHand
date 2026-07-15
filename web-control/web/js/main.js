@@ -449,6 +449,78 @@ class UIControls {
     document.getElementById('btn-connect').addEventListener('click', e => e.stopPropagation());
     document.getElementById('btn-disconnect').addEventListener('click', e => e.stopPropagation());
 
+    // ── 夹爪控制按钮 ──────────────────────────────
+    const btnGripOpen = document.getElementById('btn-gripper-open');
+    const btnGripClose = document.getElementById('btn-gripper-close');
+    const btnGripGrip = document.getElementById('btn-gripper-grip');
+    const btnGripGo = document.getElementById('btn-gripper-go');
+    const btnGripHalf = document.getElementById('btn-gripper-half');
+    const btnGripQtr = document.getElementById('btn-gripper-qtr');
+    const btnGrip3qtr = document.getElementById('btn-gripper-3qtr');
+    const gripSlider = document.getElementById('gripper-pos-slider');
+    const gripSliderVal = document.getElementById('gripper-slider-val');
+
+    [btnGripOpen, btnGripClose, btnGripGrip, btnGripGo, btnGripHalf, btnGripQtr, btnGrip3qtr].forEach(b => {
+      if (b) b.addEventListener('click', e => e.stopPropagation());
+    });
+    if (gripSlider) gripSlider.addEventListener('input', e => e.stopPropagation());
+
+    if (btnGripOpen) {
+      btnGripOpen.addEventListener('click', () => {
+        this.ws.send({ cmd: 'gripper', action: 'open' });
+        this._log('→ 夹爪 OPEN / 张开');
+        document.getElementById('gripper-state-badge').textContent = '打开中...';
+      });
+    }
+    if (btnGripClose) {
+      btnGripClose.addEventListener('click', () => {
+        this.ws.send({ cmd: 'gripper', action: 'close' });
+        this._log('→ 夹爪 CLOSE / 闭合');
+        document.getElementById('gripper-state-badge').textContent = '闭合中...';
+      });
+    }
+    if (btnGripGrip) {
+      btnGripGrip.addEventListener('click', () => {
+        this.ws.send({ cmd: 'gripper', action: 'grip' });
+        this._log('→ 夹爪 GRIP / 夹取检测');
+        document.getElementById('gripper-state-badge').textContent = '夹取中...';
+      });
+    }
+    if (btnGripGo && gripSlider) {
+      btnGripGo.addEventListener('click', () => {
+        const pos = gripSlider.value;
+        this.ws.send({ cmd: 'gripper', action: 'pos', pos: parseInt(pos) });
+        this._log('→ 夹爪 POS ' + pos);
+      });
+    }
+    if (gripSlider && gripSliderVal) {
+      gripSlider.addEventListener('input', () => {
+        gripSliderVal.textContent = gripSlider.value;
+      });
+    }
+    // 预设位置按钮
+    if (btnGripHalf) btnGripHalf.addEventListener('click', () => {
+      const p = 1900;
+      this.ws.send({ cmd: 'gripper', action: 'pos', pos: p });
+      if (gripSlider) gripSlider.value = p;
+      if (gripSliderVal) gripSliderVal.textContent = p;
+      this._log('→ 夹爪 POS 50% (' + p + ')');
+    });
+    if (btnGripQtr) btnGripQtr.addEventListener('click', () => {
+      const p = 950;
+      this.ws.send({ cmd: 'gripper', action: 'pos', pos: p });
+      if (gripSlider) gripSlider.value = p;
+      if (gripSliderVal) gripSliderVal.textContent = p;
+      this._log('→ 夹爪 POS 25% (' + p + ')');
+    });
+    if (btnGrip3qtr) btnGrip3qtr.addEventListener('click', () => {
+      const p = 2850;
+      this.ws.send({ cmd: 'gripper', action: 'pos', pos: p });
+      if (gripSlider) gripSlider.value = p;
+      if (gripSliderVal) gripSliderVal.textContent = p;
+      this._log('→ 夹爪 POS 75% (' + p + ')');
+    });
+
     // 日志面板（按钮在连接栏中）
     const logPanel = document.getElementById('log-panel');
     const logBtn = document.getElementById('btn-log-toggle');
@@ -525,6 +597,30 @@ class UIControls {
       if (parts.length === 6 && parts.every(n => !isNaN(n))) {
         this._updateRTAngles(parts);
       }
+    });
+
+    // ── 夹爪状态 ──────────────────────────────────
+    this.ws.on('gripper_state', (data) => {
+      const badge = document.getElementById('gripper-state-badge');
+      const loadEl = document.getElementById('gripper-load');
+      const posMmEl = document.getElementById('gripper-pos');
+      const posValEl = document.getElementById('gripper-pos-val');
+      if (badge) {
+        const labels = { 0: '张开', 1: '闭合', 2: '运动中', 3: '夹到!' };
+        badge.textContent = labels[data.state] || '--';
+        badge.className = 'gripper-state';
+        if (data.state === 0) badge.classList.add('open');
+        else if (data.state === 1) badge.classList.add('closed');
+        else if (data.state === 2) badge.classList.add('moving');
+        else if (data.state === 3) badge.classList.add('grasped');
+      }
+      if (loadEl) loadEl.textContent = (data.load !== undefined) ? data.load : '--';
+      if (posMmEl) posMmEl.textContent = (data.mm !== undefined) ? data.mm.toFixed(1) + 'mm' : '--';
+      if (posValEl && data.pos !== undefined) posValEl.textContent = data.pos;
+    });
+
+    this.ws.on('gripper_msg', (data) => {
+      this._log('← [夹爪] ' + data.raw);
     });
 
     this.ws.on('error', (data) => this._log('⚠ ' + data.msg));

@@ -173,6 +173,47 @@
           </div>
         </div>
       </div>
+
+      <!-- 夹爪控制 -->
+      <div class="drawer-section" id="sec-gripper">
+        <div class="sec-header">
+          <span>夹爪控制</span>
+          <button class="sec-toggle">▾</button>
+        </div>
+        <div class="sec-body">
+          <div class="gripper-status">
+            <div class="gripper-row">
+              <span>状态：</span>
+              <span class="gripper-state" id="gripper-state-badge">--</span>
+              <span style="margin-left:12px">负载：</span><span id="gripper-load">--</span>
+            </div>
+            <div class="gripper-row">
+              <span>位置：</span><span id="gripper-pos-val">--</span>
+              <span style="margin-left:12px">开度：</span><span id="gripper-pos">--</span>
+            </div>
+          </div>
+          <div class="action-row">
+            <button class="action-btn action-secondary" id="btn-gripper-open">OPEN<br>张开</button>
+            <button class="action-btn action-primary" id="btn-gripper-close">CLOSE<br>闭合</button>
+            <button class="action-btn" id="btn-gripper-grip" style="background:#e94560;color:#fff">GRIP<br>夹取检测</button>
+          </div>
+          <div class="gripper-slider" style="margin-top:8px">
+            <div style="display:flex;justify-content:space-between;font-size:0.8rem;margin-bottom:4px">
+              <span>目标位置</span>
+              <span><strong id="gripper-slider-val">0</strong></span>
+            </div>
+            <input type="range" id="gripper-pos-slider" min="0" max="3800" value="0"
+                   style="width:100%">
+            <button class="action-btn action-secondary" id="btn-gripper-go"
+                    style="width:100%;margin-top:4px;padding:6px">GO 移动到目标位置</button>
+          </div>
+          <div class="action-row" style="margin-top:6px">
+            <button class="action-btn" id="btn-gripper-half" style="font-size:0.8rem;padding:6px">50%</button>
+            <button class="action-btn" id="btn-gripper-qtr" style="font-size:0.8rem;padding:6px">25%</button>
+            <button class="action-btn" id="btn-gripper-3qtr" style="font-size:0.8rem;padding:6px">75%</button>
+          </div>
+        </div>
+      </div>
     </div>
   </aside>
 

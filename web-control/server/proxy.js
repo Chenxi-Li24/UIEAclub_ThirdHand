@@ -25,8 +25,10 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 const clients = new Set();
 
 // ── 传输层抽象 ────────────────────────────────────────────────────
-let transport = null;
+let transport = null;           // 机械臂 ESP32-P4
 let heartbeatTimer = null;
+let gripperTransport = null;    // 夹爪 ESP32-S3
+let gripperHeartbeatTimer = null;
 
 // ── 当前关节位置缓存（从 ESP32 CNDE 回读更新）─────────────────────
 let currentJoints = [0, 0, 0, 0, 0, 0];
@@ -34,7 +36,7 @@ let motionInProgress = false;
 
 /** UDP (WiFi) 传输 — 单 socket 收发 */
 class WifiTransport {
-  constructor(host, port) {
+  constructor(host, port, localPort) {
     this.host = host;
     this.port = port;
     this.socket = dgram.createSocket('udp4');
@@ -49,8 +51,9 @@ class WifiTransport {
     this.socket.on('error', (err) => {
       console.error('[UDP] error:', err.message);
     });
-    this.socket.bind(config.web.port + 1);
-    console.log(`[WiFi] UDP target: ${host}:${port}, listening on ${config.web.port + 1}`);
+    const lp = localPort || (config.web.port + 1);
+    this.socket.bind(lp);
+    console.log(`[WiFi] UDP target: ${host}:${port}, listening on ${lp}`);
   }
 
   send(text) {
@@ -140,6 +143,68 @@ async function connectWifi(opts) {
   }
 }
 
+// ── 连接夹爪 ESP32 (WiFi/UDP) ──────────────────────────────────────
+async function connectGripper(opts) {
+  if (gripperTransport) {
+    gripperTransport.close();
+    gripperTransport = null;
+  }
+  if (gripperHeartbeatTimer) { clearInterval(gripperHeartbeatTimer); gripperHeartbeatTimer = null; }
+
+  try {
+    const host = opts.host || config.connection.gripper.host;
+    const port = opts.port || config.connection.gripper.port;
+    gripperTransport = new WifiTransport(host, port, config.web.port + 2);
+
+    // Gripper heartbeat every 1s
+    gripperHeartbeatTimer = setInterval(() => {
+      if (gripperTransport && gripperTransport.connected) {
+        gripperTransport.send('heartbeat');
+      }
+    }, 1000);
+
+    gripperTransport.onMessage((text) => {
+      // Parse gripper status: "GRIP:state,pos,load,mm,moving"
+      if (text.startsWith('GRIP:')) {
+        const parts = text.substring(5).split(',');
+        broadcast({
+          type: 'gripper_state',
+          state: parseInt(parts[0]) || 0,     // 0=open, 1=closed, 2=moving, 3=grasped
+          pos: parseInt(parts[1]) || 0,
+          load: parseInt(parts[2]) || 0,
+          mm: parseFloat(parts[3]) || 0,
+          moving: parseInt(parts[4]) || 0,
+          ts: Date.now()
+        });
+        return;
+      }
+      // Parse GRASPED result: "GRASPED:pos,mm,load"
+      if (text.startsWith('GRASPED:')) {
+        const parts = text.substring(9).split(',');
+        broadcast({
+          type: 'gripper_state',
+          state: 3,  // 3 = grasped
+          pos: parseInt(parts[0]) || 0,
+          mm: parseFloat(parts[1]) || 0,
+          load: parseInt(parts[2]) || 0,
+          moving: 0,
+          ts: Date.now()
+        });
+        return;
+      }
+      // Other gripper responses (OK/ERR text)
+      broadcast({ type: 'gripper_msg', raw: text });
+    });
+
+    broadcast({ type: 'gripper_connection', ...gripperTransport.getInfo() });
+    console.log(`[Gripper] connected to ${host}:${port}`);
+  } catch (err) {
+    broadcast({ type: 'gripper_connection', mode: 'wifi', connected: false, error: err.message });
+    console.error('[Gripper] connect failed:', err.message);
+    gripperTransport = null;
+  }
+}
+
 // ── WebSocket 广播 ────────────────────────────────────────────────
 function broadcast(data) {
   const json = JSON.stringify(data);
@@ -158,7 +223,8 @@ wss.on('connection', (ws) => {
     presets: config.presets,
     servo: config.servo,
     motion: config.motion,
-    connection: transport ? transport.getInfo() : { mode: 'wifi', connected: false }
+    connection: transport ? transport.getInfo() : { mode: 'wifi', connected: false },
+    gripperConnection: gripperTransport ? gripperTransport.getInfo() : { mode: 'wifi', connected: false }
   }));
 
   ws.on('message', (data) => {
@@ -307,6 +373,23 @@ async function handleBrowserCommand(msg, ws) {
       break;
     }
 
+    case 'gripper': {
+      if (!gripperTransport || !gripperTransport.connected) {
+        ws.send(JSON.stringify({ type: 'error', msg: '夹爪未连接 / Gripper not connected' }));
+        return;
+      }
+      const action = msg.action;
+      if (action === 'open')        gripperTransport.send('open');
+      else if (action === 'close')  gripperTransport.send('close');
+      else if (action === 'grip')   gripperTransport.send('grip');
+      else if (action === 'status') gripperTransport.send('status');
+      else if (action === 'pos' && msg.pos !== undefined) gripperTransport.send('pos ' + msg.pos);
+      else {
+        ws.send(JSON.stringify({ type: 'error', msg: `unknown gripper action: ${action}` }));
+      }
+      break;
+    }
+
     case 'ping': {
       ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
       break;
@@ -339,15 +422,19 @@ server.listen(config.web.port, config.web.host, async () => {
   console.log(`  Local:   http://localhost:${config.web.port}`);
   ips.forEach(ip => console.log(`  Network: http://${ip}:${config.web.port}`));
   console.log(`  ESP32:   ${config.connection.wifi.host}:${config.connection.wifi.port}`);
+  console.log(`  Gripper: ${config.connection.gripper.host}:${config.connection.gripper.port}`);
   console.log('═══════════════════════════════════════════════');
 
   await connectWifi(config.connection.wifi);
+  await connectGripper(config.connection.gripper);
 });
 
 process.on('SIGINT', () => {
   console.log('\n[shutdown] closing...');
   if (heartbeatTimer) clearInterval(heartbeatTimer);
+  if (gripperHeartbeatTimer) clearInterval(gripperHeartbeatTimer);
   if (transport) transport.close();
+  if (gripperTransport) gripperTransport.close();
   server.close();
   process.exit(0);
 });

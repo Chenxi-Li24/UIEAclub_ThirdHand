@@ -13,6 +13,10 @@ module.exports = {
     wifi: {
       host: '192.168.58.100',
       port: 20008
+    },
+    gripper: {
+      host: '192.168.58.101',
+      port: 20009
     }
   },
 
