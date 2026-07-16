@@ -15,6 +15,14 @@ managed_components/
 # Node.js (web-control)
 web-control/server/node_modules/
 
+# Archives
+*.zip
+*.7z
+
+# Python
+__pycache__/
+*.py[cod]
+
 # OS
 .DS_Store
 Thumbs.db
