@@ -64,9 +64,8 @@ int SafeServoMotion::setTarget(const float target[6], const float current[6],
 
     _active = true;
     _lastTickUs = micros() - PERIOD_US;
-    Serial.printf("[SAFE-MOTION] start: %.3fs, J1 %.1f deg/s, J2-J6 %.1f deg/s, hard %.1f deg/s\n",
-                  CMD_T_SEC, J1_COMMAND_SPEED_DEG_S,
-                  COMMAND_SPEED_DEG_S, HARD_SPEED_LIMIT_DEG_S);
+    Serial.printf("[SAFE-MOTION] start: %.3fs, J1-J6 %.1f deg/s, hard %.1f deg/s\n",
+                  CMD_T_SEC, COMMAND_SPEED_DEG_S, HARD_SPEED_LIMIT_DEG_S);
     unlock();
     return FR_OK;
 }

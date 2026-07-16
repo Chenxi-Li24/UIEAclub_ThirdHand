@@ -29,8 +29,12 @@ extern const lv_font_t* UI_F16;
 extern const lv_font_t* UI_F20;
 extern const lv_font_t* UI_F24;
 
+lv_obj_t* ui_screen_create(bool vertical_scroll = false);
+lv_obj_t* ui_page_content(lv_obj_t* screen, bool vertical_scroll = true);
 lv_obj_t* ui_label(lv_obj_t* parent, int x, int y, int w, uint32_t color, const lv_font_t* font);
 void ui_label_setf(lv_obj_t* label, const char* fmt, ...);
 lv_obj_t* ui_card(lv_obj_t* parent, int x, int y, int w, int h, uint32_t bg_color = UI_CARD);
 void ui_add_page_dots(lv_obj_t* scr, uint8_t page_idx);
 void ui_divider(lv_obj_t* parent, int y);
+void ui_prepare_clickable(lv_obj_t* obj);
+bool ui_event_is_tap(lv_event_t* event);

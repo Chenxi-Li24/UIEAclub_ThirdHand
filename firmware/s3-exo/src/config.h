@@ -1,9 +1,10 @@
 #pragma once
 // Robot Controller Configuration
 // WiFi defaults (fallback if NVS has no stored credentials)
-#define WIFI_SSID       "Xiaomi_7D5E"
+#define WIFI_SSID       "ZTE-P5cS5Y"
 #define WIFI_PASS       "12345678"
-#define STATIC_IP       "192.168.58.100"
+// P4 controller uses .100 and the sensor board uses .101.
+#define STATIC_IP       "192.168.58.102"
 #define STATIC_GW       "192.168.58.1"
 #define STATIC_MASK     "255.255.255.0"
 

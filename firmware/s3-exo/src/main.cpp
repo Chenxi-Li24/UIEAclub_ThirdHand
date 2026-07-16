@@ -11,6 +11,7 @@
 #include "hw/input.h"
 #include "hw/pins.h"
 #include "hw/power.h"
+#include "app_tasks.h"
 #include "stats.h"
 #include "config.h"
 #include "wifi_manager.h"
@@ -19,6 +20,7 @@
 #include "robot/cnde_client.h"
 #include "web_server.h"
 #include "ui/ui_core.h"
+#include "ui/ui_melody.h"
 #include "ui/ui_wifi.h"
 #include <Arduino.h>
 #include <Adafruit_NeoPixel.h>
@@ -100,13 +102,13 @@ static bool robotFeedbackFresh(const RobotStateData& state) {
 
 bool safeMotionSetTarget(const float joints[6], bool continuous) {
   if (!wifiMgrConnected()) return false;
-  const RobotStateData& robotState = g_cnde.getState();
+  const RobotStateData robotState = g_cnde.getState();
   if (!robotFeedbackFresh(robotState)) return false;
   return g_safeMotion.setTarget(joints, robotState.jointPos, continuous) == FR_OK;
 }
 
 bool safeMotionStartHold() {
-  const RobotStateData& robotState = g_cnde.getState();
+  const RobotStateData robotState = g_cnde.getState();
   if (!wifiMgrConnected() || !robotFeedbackFresh(robotState)) return false;
   return g_safeMotion.setTarget(
     robotState.jointPos, robotState.jointPos, true) == FR_OK;
@@ -231,7 +233,7 @@ static void processCmd(const String& line) {
     return;
   }
   if (line == "status") {
-    const RobotStateData& rs = g_cnde.getState();
+    const RobotStateData rs = g_cnde.getState();
     if (rs.valid) {
       cmdRespondF("J1:%.1f J2:%.1f J3:%.1f J4:%.1f J5:%.1f J6:%.1f robot:%d prog:%d err:%d/%d\r\n",
                   rs.jointPos[0], rs.jointPos[1], rs.jointPos[2],
@@ -321,12 +323,42 @@ static void statusTimerCb(lv_timer_t* timer) { ui_refresh_all(); }
 
 // CNDE debug serial print (500ms)
 static void cndeDebugTimerCb(lv_timer_t* timer) {
-  const RobotStateData& rs = g_cnde.getState();
+  const RobotStateData rs = g_cnde.getState();
   if (rs.valid) {
     Serial.printf("J1:%.1f J2:%.1f J3:%.1f J4:%.1f J5:%.1f J6:%.1f st:%d/%d\n",
                   rs.jointPos[0], rs.jointPos[1], rs.jointPos[2],
                   rs.jointPos[3], rs.jointPos[4], rs.jointPos[5],
                   rs.robotState, rs.programState);
+  }
+}
+
+static void serialUiDebugTick() {
+  static char command[32] = {};
+  static uint8_t length = 0;
+  while (Serial.available() > 0) {
+    const char ch = static_cast<char>(Serial.read());
+    if (ch == '\r' || ch == '\n') {
+      if (!length) continue;
+      command[length] = 0;
+      if (strcmp(command, "ui wifi") == 0) {
+        Serial.println("[UI] serial command: open WiFi Setup");
+        ui_wifi_show();
+      } else if (strcmp(command, "ui wifi back") == 0) {
+        Serial.println("[UI] serial command: close WiFi Setup");
+        ui_wifi_close();
+      } else if (strcmp(command, "ui buzzer") == 0) {
+        Serial.println("[UI] serial command: open Buzzer");
+        ui_melody_show();
+      } else if (strcmp(command, "ui buzzer back") == 0) {
+        Serial.println("[UI] serial command: close Buzzer");
+        ui_melody_close();
+      } else {
+        Serial.printf("[UI] unknown serial command: %s\n", command);
+      }
+      length = 0;
+    } else if (length + 1 < sizeof(command)) {
+      command[length++] = ch;
+    }
   }
 }
 
@@ -340,6 +372,9 @@ void setup() {
   while (!Serial && (millis() - serStart < 3000)) { delay(10); }
   delay(100);
   Serial.println("\n=== ESP32 Fairino Robot Controller v2.0 ===");
+  Serial.printf("[BOOT] PSRAM: %s, size=%u, free=%u\n",
+                psramFound() ? "OK" : "NOT FOUND", ESP.getPsramSize(),
+                ESP.getFreePsram());
 
   // 2. LED — show boot
   s_led.begin();
@@ -381,14 +416,14 @@ void setup() {
 
   // 9. NVS settings
   settingsLoad();
-  wifiCredLoad();
+  hwDisplayBrightness(settings().brightness);
 
   // 10. WiFi — static IP
-  wifiMgrInit();
-  if (!wifiCredHas()) {
-    wifiCredAddTop(WIFI_SSID, WIFI_PASS);
-  }
-  wifiMgrReconnectStatic(STATIC_IP, STATIC_GW, STATIC_MASK);
+  wifiMgrInit(false);
+  // This controller belongs on the robot LAN. Always refresh the compiled
+  // credentials so stale NVS data cannot keep an old SSID/password active.
+  wifiMgrConnectStatic(WIFI_SSID, WIFI_PASS,
+                       STATIC_IP, STATIC_GW, STATIC_MASK);
 
   // 11. Fairino UDP + CNDE (non-blocking begin, will connect once WiFi is up)
   g_fairino.begin();
@@ -424,12 +459,18 @@ void setup() {
 
   // 14. UI (5 swipeable screens: Home / Robot / Settings / WiFi / Melody)
   ui_core_init();
-  ui_wifi_create();
+  Serial.printf("[UI] primary screens ready, heap=%u\n", ESP.getFreeHeap());
 
   // 15. LVGL periodic timers
   lv_timer_create(ledTimerCb, 500, NULL);          // LED status
   lv_timer_create(statusTimerCb, 200, NULL);       // UI data refresh
   lv_timer_create(cndeDebugTimerCb, 500, NULL);    // CNDE debug print
+
+  // Blocking CNDE I/O and the 16 ms ServoJ stream must never run in the
+  // LVGL/touch loop on Core 1.
+  if (!appTasksStart()) {
+    Serial.println("[BOOT] Background task startup FAILED");
+  }
 
   Serial.println("[BOOT] === Ready ===");
   ledSet(0, 0, 255, 32);  // blue = idle/ready
@@ -443,6 +484,7 @@ void loop() {
   static bool cmdBound = false;
   static bool bootArmed = true;
   static bool wasConn = false;
+  static uint32_t lastTaskStats = 0;
   uint32_t now = millis();
 
   // 1. LVGL heartbeat
@@ -453,21 +495,16 @@ void loop() {
 
   // 3. Touch input
   hwInputUpdate();
+  serialUiDebugTick();
 
-  // 4. WiFi scan poll (async result delivery)
-  ui_wifi_poll_scan();
-
-  // 5. CNDE state feedback (only when WiFi is up)
-  if (wifiMgrConnected()) g_cnde.tick();
-
-  // 6. Bind UDP command server once WiFi connects
+  // 4. Bind UDP command server once WiFi connects
   if (wifiMgrConnected() && !cmdBound) {
     s_cmdServer.begin(CMD_SERVER_PORT);
     cmdBound = true;
     Serial.printf("[MAIN] UDP cmd server on port %d\n", CMD_SERVER_PORT);
   }
 
-  // 7. Process incoming UDP commands (skip during self-test MOVEs to avoid conflicts)
+  // 6. Process incoming UDP commands (skip during self-test MOVEs to avoid conflicts)
   if (cmdBound && stState != ST_MOVE) {
     int pktSize = s_cmdServer.parsePacket();
     if (pktSize > 0 && pktSize < CMD_BUF_SIZE) {
@@ -481,15 +518,16 @@ void loop() {
     }
   }
 
-  // 8. BOOT button (GPIO0) — trigger self-test on press
+  // 7. BOOT button (GPIO0) — trigger self-test on press
   if (digitalRead(BOOT_BUTTON) == LOW) {
     if (bootArmed) { bootArmed = false; selfTestStart(); }
   } else { bootArmed = true; }
 
-  // 9. Self-test state machine advance
+  // 8. Self-test state machine advance
   selfTestTick();
 
-  int motionResult = g_safeMotion.tick();
+  // 9. Report errors raised by the dedicated ServoJ task.
+  int motionResult = appTasksTakeMotionError();
   if (motionResult != FR_OK) {
     Serial.printf("[SAFE-MOTION] ServoJ stream failed: %d\n", motionResult);
     webLog("SAFE-MOTION failed: %d", motionResult);
@@ -515,5 +553,10 @@ void loop() {
     wasConn = nowConn;
   }
 
-  delay(1);
+  if (now - lastTaskStats >= 30000) {
+    lastTaskStats = now;
+    appTasksLogStats();
+  }
+
+  vTaskDelay(pdMS_TO_TICKS(5));
 }

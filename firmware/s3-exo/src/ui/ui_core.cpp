@@ -5,6 +5,9 @@
 #include "ui/ui_system.h"
 #include "ui/ui_settings.h"
 #include "ui/ui_melody.h"
+#include "ui/ui_more.h"
+#include "hw/input.h"
+#include <Arduino.h>
 #include <cstdarg>
 #include <cstdio>
 
@@ -13,6 +16,34 @@ const lv_font_t* UI_F12 = &lv_font_montserrat_14;
 const lv_font_t* UI_F16 = &lv_font_montserrat_16;
 const lv_font_t* UI_F20 = &lv_font_montserrat_20;
 const lv_font_t* UI_F24 = &lv_font_montserrat_24;
+
+lv_obj_t* ui_screen_create(bool vertical_scroll) {
+  (void)vertical_scroll;
+  lv_obj_t* screen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(screen, lv_color_hex(UI_BG), 0);
+  lv_obj_set_style_pad_all(screen, 0, 0);
+  lv_obj_set_scrollbar_mode(screen, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+  return screen;
+}
+
+lv_obj_t* ui_page_content(lv_obj_t* screen, bool vertical_scroll) {
+  lv_obj_t* body = lv_obj_create(screen);
+  lv_obj_set_pos(body, 0, 27);
+  lv_obj_set_size(body, 240, 233);
+  lv_obj_set_style_bg_opa(body, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(body, 0, 0);
+  lv_obj_set_style_radius(body, 0, 0);
+  lv_obj_set_style_pad_all(body, 0, 0);
+  lv_obj_set_scrollbar_mode(body, LV_SCROLLBAR_MODE_OFF);
+  if (vertical_scroll) {
+    lv_obj_set_scroll_dir(body, LV_DIR_VER);
+    lv_obj_add_flag(body, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+  } else {
+    lv_obj_clear_flag(body, LV_OBJ_FLAG_SCROLLABLE);
+  }
+  return body;
+}
 
 lv_obj_t* ui_label(lv_obj_t* parent, int x, int y, int w, uint32_t color, const lv_font_t* font) {
   lv_obj_t* l = lv_label_create(parent);
@@ -41,7 +72,20 @@ lv_obj_t* ui_card(lv_obj_t* parent, int x, int y, int w, int h, uint32_t bg_colo
   lv_obj_set_style_radius(b, 12, 0);
   lv_obj_set_style_border_width(b, 0, 0);
   lv_obj_set_style_pad_all(b, 6, 0);
+  lv_obj_set_scrollbar_mode(b, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(b, LV_OBJ_FLAG_CLICKABLE);
   return b;
+}
+
+void ui_prepare_clickable(lv_obj_t* obj) {
+  if (!obj) return;
+  lv_obj_add_flag(obj, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_GESTURE_BUBBLE);
+}
+
+bool ui_event_is_tap(lv_event_t* event) {
+  (void)event;
+  return hwInputClickAllowed();
 }
 
 void ui_divider(lv_obj_t* parent, int y) {
@@ -64,6 +108,8 @@ void ui_add_page_dots(lv_obj_t* scr, uint8_t page_idx) {
     lv_obj_set_style_bg_color(dot, lv_color_hex(i == page_idx ? UI_WHITE : UI_DIM), 0);
     lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_border_width(dot, 0, 0);
+    lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(dot, LV_OBJ_FLAG_FLOATING);
   }
 }
 
@@ -88,7 +134,12 @@ static void anim_done_cb(lv_timer_t* t) { s_animating = false; lv_timer_del(t); 
 
 void ui_screen_goto(uint8_t idx, bool animate) {
   if (idx >= UI_SCREEN_COUNT || s_animating) return;
-  if (idx == s_current) return;
+  if (idx == s_current) {
+    // Modal screens do not change s_current. Loading the current primary page
+    // is therefore also the Back operation for WiFi and Buzzer screens.
+    if (lv_scr_act() != s_screens[idx]) lv_scr_load(s_screens[idx]);
+    return;
+  }
   uint8_t old = s_current;
   s_current = idx;
   s_animating = true;
@@ -111,21 +162,27 @@ void ui_refresh_all() {
 }
 
 void ui_core_init() {
+  Serial.printf("[UI] create Home, heap=%u\n", ESP.getFreeHeap());
   s_screens[0] = ui_home_create();
+  Serial.printf("[UI] create Robot, heap=%u\n", ESP.getFreeHeap());
   s_screens[1] = ui_robot_create();
+  Serial.printf("[UI] create System, heap=%u\n", ESP.getFreeHeap());
   s_screens[2] = ui_system_create();
+  Serial.printf("[UI] create Settings, heap=%u\n", ESP.getFreeHeap());
   s_screens[3] = ui_settings_create();
-  s_screens[4] = ui_melody_create();
+  Serial.printf("[UI] create More, heap=%u\n", ESP.getFreeHeap());
+  s_screens[4] = ui_more_create();
 
   s_refreshers[0] = ui_home_refresh;
   s_refreshers[1] = ui_robot_refresh;
   s_refreshers[2] = ui_system_refresh;
   s_refreshers[3] = ui_settings_refresh;
-  s_refreshers[4] = ui_melody_refresh;
+  s_refreshers[4] = ui_more_refresh;
 
   for (int i = 0; i < UI_SCREEN_COUNT; i++) {
     lv_obj_add_event_cb(s_screens[i], gesture_cb, LV_EVENT_GESTURE, NULL);
   }
+  Serial.printf("[UI] primary screens ready, heap=%u\n", ESP.getFreeHeap());
   lv_scr_load(s_screens[0]);
   s_current = 0;
 }

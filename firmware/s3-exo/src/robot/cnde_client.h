@@ -5,6 +5,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 // CNDE frame types
 #define CNDE_TYPE_OUTPUT_CONFIG  1
@@ -31,20 +33,21 @@ class CNDEClient {
 public:
     void begin(const char* ip, uint16_t port = 20005);
     void tick();
-    bool isConnected();
-    const RobotStateData& getState() { return _state; }
+    bool isConnected() const;
+    RobotStateData getState();
 
 private:
     WiFiClient _tcp;
     String _ip;
     uint16_t _port = 20005;
-    bool _connected = false;
+    volatile bool _connected = false;
     bool _configured = false;
     unsigned long _lastConnect = 0;
     unsigned long _lastRecv = 0;
     uint8_t _sendCount = 0;
     uint32_t _frameCount = 0;
     RobotStateData _state = {};
+    SemaphoreHandle_t _stateMutex = nullptr;
 
     bool sendFrame(uint8_t type, const uint8_t* data, uint16_t len);
     bool sendOutputConfig();

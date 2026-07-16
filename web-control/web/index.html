@@ -146,12 +146,42 @@
             <span class="exo-sequence" id="exo-sequence">#--</span>
           </div>
           <div class="exo-grid">
-            <div class="exo-channel" id="exo-ch1"><span>J1</span><strong>--°</strong><small>-- mV</small></div>
-            <div class="exo-channel" id="exo-ch2"><span>J2</span><strong>--°</strong><small>-- mV</small></div>
-            <div class="exo-channel" id="exo-ch3"><span>J3</span><strong>--°</strong><small>-- mV</small></div>
-            <div class="exo-channel" id="exo-ch4"><span>J4</span><strong>--°</strong><small>-- mV</small></div>
-            <div class="exo-channel" id="exo-ch5"><span>J5</span><strong>--°</strong><small>-- mV</small></div>
-            <div class="exo-channel" id="exo-ch6"><span>J6</span><strong>--°</strong><small>-- mV</small></div>
+            <div class="exo-channel" id="exo-ch1">
+              <div class="exo-channel-head"><b>H1</b><span>肩部左右侧动</span><em>→ J1</em></div>
+              <div class="exo-readings"><strong class="exo-angle">--°</strong><small class="exo-voltage">-- mV</small></div>
+              <div class="exo-target">目标 J1 <b class="exo-target-value">--°</b></div>
+              <div class="exo-direction" aria-label="H1 角度增加方向"><button type="button" class="active" data-channel="1" data-direction="1">+ 正向</button><button type="button" data-channel="1" data-direction="-1">− 反向</button></div>
+            </div>
+            <div class="exo-channel" id="exo-ch2">
+              <div class="exo-channel-head"><b>H2</b><span>肩部前后摆动</span><em>→ J2</em></div>
+              <div class="exo-readings"><strong class="exo-angle">--°</strong><small class="exo-voltage">-- mV</small></div>
+              <div class="exo-target">目标 J2 <b class="exo-target-value">--°</b></div>
+              <div class="exo-direction" aria-label="H2 角度增加方向"><button type="button" class="active" data-channel="2" data-direction="1">+ 正向</button><button type="button" data-channel="2" data-direction="-1">− 反向</button></div>
+            </div>
+            <div class="exo-channel" id="exo-ch3">
+              <div class="exo-channel-head"><b>H3</b><span>小臂绕轴旋转</span><em>→ J4</em></div>
+              <div class="exo-readings"><strong class="exo-angle">--°</strong><small class="exo-voltage">-- mV</small></div>
+              <div class="exo-target">目标 J4 <b class="exo-target-value">--°</b></div>
+              <div class="exo-direction" aria-label="H3 角度增加方向"><button type="button" class="active" data-channel="3" data-direction="1">+ 正向</button><button type="button" data-channel="3" data-direction="-1">− 反向</button></div>
+            </div>
+            <div class="exo-channel" id="exo-ch4">
+              <div class="exo-channel-head"><b>H4</b><span>肘部屈伸</span><em>→ J3</em></div>
+              <div class="exo-readings"><strong class="exo-angle">--°</strong><small class="exo-voltage">-- mV</small></div>
+              <div class="exo-target">目标 J3 <b class="exo-target-value">--°</b></div>
+              <div class="exo-direction" aria-label="H4 角度增加方向"><button type="button" class="active" data-channel="4" data-direction="1">+ 正向</button><button type="button" data-channel="4" data-direction="-1">− 反向</button></div>
+            </div>
+            <div class="exo-channel" id="exo-ch5">
+              <div class="exo-channel-head"><b>H5</b><span>手腕旋转</span><em>→ J6</em></div>
+              <div class="exo-readings"><strong class="exo-angle">--°</strong><small class="exo-voltage">-- mV</small></div>
+              <div class="exo-target">目标 J6 <b class="exo-target-value">--°</b></div>
+              <div class="exo-direction" aria-label="H5 角度增加方向"><button type="button" class="active" data-channel="5" data-direction="1">+ 正向</button><button type="button" data-channel="5" data-direction="-1">− 反向</button></div>
+            </div>
+            <div class="exo-channel" id="exo-ch6">
+              <div class="exo-channel-head"><b>H6</b><span>手腕前后弯曲</span><em>→ J5</em></div>
+              <div class="exo-readings"><strong class="exo-angle">--°</strong><small class="exo-voltage">-- mV</small></div>
+              <div class="exo-target">目标 J5 <b class="exo-target-value">--°</b></div>
+              <div class="exo-direction" aria-label="H6 角度增加方向"><button type="button" class="active" data-channel="6" data-direction="1">+ 正向</button><button type="button" data-channel="6" data-direction="-1">− 反向</button></div>
+            </div>
           </div>
           <label class="toggle-label exo-control-toggle">
             <input type="checkbox" id="chk-exo-control">

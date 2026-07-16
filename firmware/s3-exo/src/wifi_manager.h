@@ -11,14 +11,26 @@ enum WifiMgrState {
   WM_FAIL            // last attempt failed, will retry
 };
 
-void wifiMgrInit();
+constexpr uint8_t WIFI_SCAN_MAX_RESULTS = 10;
+
+struct WifiScanEntry {
+  char ssid[33];
+  int32_t rssi;
+  uint8_t channel;
+  bool secure;
+};
+
+void wifiMgrInit(bool autoConnect = true);
 void wifiMgrTick();
 void wifiMgrConnect(const char* ssid, const char* pass);
 void wifiMgrConnectStatic(const char* ssid, const char* pass,
                           const char* ip, const char* gateway, const char* subnet);
 void wifiMgrReconnectStatic(const char* ip, const char* gateway, const char* subnet);
 void wifiMgrDisconnect();
-void wifiMgrScan(std::function<void(String json)> callback);
+bool wifiMgrScan(std::function<void(String json)> callback);
+bool wifiMgrScanBusy();
+uint8_t wifiMgrScanCount();
+bool wifiMgrScanGet(uint8_t index, WifiScanEntry& entry);
 
 WifiMgrState wifiMgrState();
 String       wifiMgrLocalIP();

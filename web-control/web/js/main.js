@@ -319,6 +319,8 @@ class UIControls {
     this.presets = {};
     this._drawerCollapsed = false;
     this._lastFairinoError = '';
+    this._exoMapping = [1, 2, 4, 3, 6, 5];
+    this._exoDirections = [1, 1, 1, 1, 1, 1];
   }
 
   build() {
@@ -401,7 +403,22 @@ class UIControls {
 
     document.getElementById('chk-exo-control').addEventListener('change', (e) => {
       this.ws.send({ cmd: 'exo_control', enabled: e.target.checked });
+      this._setExoDirectionDisabled(e.target.checked);
       this._log(`→ 外骨骼控制${e.target.checked ? '开启' : '关闭'}`);
+    });
+
+    document.querySelectorAll('.exo-direction button').forEach(button => {
+      button.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (document.getElementById('chk-exo-control').checked) {
+          this._log('请先关闭外骨骼驱动，再修改方向');
+          return;
+        }
+        const channel = Number(button.dataset.channel);
+        const direction = Number(button.dataset.direction);
+        this.ws.send({ cmd: 'exo_direction', channel, direction });
+        this._log(`→ H${channel} 角度增加方向设为${direction > 0 ? '正向' : '反向'}`);
+      });
     });
 
     // 抽屉收起/展开
@@ -539,14 +556,34 @@ class UIControls {
       for (let i = 0; i < 6; i++) {
         const channel = document.getElementById(`exo-ch${i + 1}`);
         if (!channel) continue;
-        channel.querySelector('strong').textContent = `${Number(data.angles[i]).toFixed(1)}°`;
-        channel.querySelector('small').textContent = `${Math.round(Number(data.millivolts[i]))} mV`;
+        channel.querySelector('.exo-angle').textContent = `${Number(data.angles[i]).toFixed(1)}°`;
+        channel.querySelector('.exo-voltage').textContent = `${Math.round(Number(data.millivolts[i]))} mV`;
       }
       const link = document.getElementById('exo-link');
       link.textContent = data.source === 'direct' ? '实时 · S3直连' : '实时 · P4中继';
       link.classList.add('online');
       document.getElementById('exo-sequence').textContent = `#${data.seq}`;
-      document.getElementById('chk-exo-control').checked = Boolean(data.controlEnabled);
+      if (data.source === 'p4') {
+        if (Array.isArray(data.mapping) && data.mapping.length === 6) {
+          this._exoMapping = data.mapping.map(Number);
+        }
+        if (Array.isArray(data.directions) && data.directions.length === 6) {
+          this._exoDirections = data.directions.map(Number);
+          this._setExoDirections(this._exoDirections);
+        }
+        if (Array.isArray(data.robotTargets) && data.robotTargets.length === 6) {
+          for (let i = 0; i < 6; i++) {
+            const target = document.querySelector(`#exo-ch${i + 1} .exo-target-value`);
+            const robotIndex = this._exoMapping[i] - 1;
+            if (target && robotIndex >= 0 && robotIndex < 6) {
+              target.textContent = `${Number(data.robotTargets[robotIndex]).toFixed(1)}°`;
+            }
+          }
+        }
+        const enabled = Boolean(data.controlEnabled);
+        document.getElementById('chk-exo-control').checked = enabled;
+        this._setExoDirectionDisabled(enabled);
+      }
       clearTimeout(this._exoOfflineTimer);
       this._exoOfflineTimer = setTimeout(() => {
         link.textContent = '数据超时';
@@ -568,6 +605,19 @@ class UIControls {
     if (Object.keys(this.presets).length) {
       this._setPresets(this.presets);
     }
+  }
+
+  _setExoDirections(directions) {
+    document.querySelectorAll('.exo-direction button').forEach(button => {
+      const channel = Number(button.dataset.channel) - 1;
+      button.classList.toggle('active', directions[channel] === Number(button.dataset.direction));
+    });
+  }
+
+  _setExoDirectionDisabled(disabled) {
+    document.querySelectorAll('.exo-direction button').forEach(button => {
+      button.disabled = disabled;
+    });
   }
 
   _setConnStatus(mode, info) {

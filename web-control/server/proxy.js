@@ -43,7 +43,6 @@ sensorSocket.on('message', (msg, rinfo) => {
     seq: values[0],
     angles,
     millivolts,
-    controlEnabled: false,
     source: 'direct',
     ts: Date.now()
   });
@@ -291,6 +290,22 @@ async function handleBrowserCommand(msg, ws) {
         return;
       }
       transport.send(msg.enabled ? 'exo enable' : 'exo disable');
+      break;
+    }
+
+    case 'exo_direction': {
+      if (!transport || !transport.connected) {
+        ws.send(JSON.stringify({ type: 'error', msg: '未连接到控制板' }));
+        return;
+      }
+      const channel = Number(msg.channel);
+      const direction = Number(msg.direction);
+      if (!Number.isInteger(channel) || channel < 1 || channel > 6 ||
+          (direction !== 1 && direction !== -1)) {
+        ws.send(JSON.stringify({ type: 'error', msg: '外骨骼方向参数无效' }));
+        return;
+      }
+      transport.send(`exo direction ${channel} ${direction}`);
       break;
     }
 

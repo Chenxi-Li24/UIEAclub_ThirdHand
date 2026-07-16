@@ -111,6 +111,21 @@ static bool robotFeedbackFresh(const RobotStateData& state) {
     return state.valid && millis() - state.lastUpdate <= 500;
 }
 
+static void updateExoskeletonRobotTargets() {
+    memset(s_exoTelemetry.robotTargets, 0, sizeof(s_exoTelemetry.robotTargets));
+    if (s_exoTelemetry.calibrating) return;
+
+    for (int channel = 0; channel < 6; ++channel) {
+        const float relativeAngle = s_exoTelemetry.calibrated
+            ? normalizeJointAngle(s_exoTelemetry.angles[channel] -
+                                  s_exoTelemetry.zeroOffsets[channel])
+            : s_exoTelemetry.angles[channel];
+        const uint8_t robotJoint = EXOSKELETON_TO_ROBOT_JOINT[channel];
+        s_exoTelemetry.robotTargets[robotJoint] =
+            relativeAngle * s_exoTelemetry.directions[channel];
+    }
+}
+
 ExoskeletonTelemetry exoskeletonGetTelemetry() {
     return s_exoTelemetry;
 }
@@ -176,6 +191,30 @@ static void saveExoskeletonCalibration() {
     Serial.println("[EXO] relative zero stabilized and saved; robot calibration unchanged");
 }
 
+static void saveExoskeletonDirections() {
+    Preferences preferences;
+    if (preferences.begin("exo-cal", false)) {
+        preferences.putBytes("dir", s_exoTelemetry.directions,
+                             sizeof(s_exoTelemetry.directions));
+        preferences.end();
+    }
+}
+
+bool exoskeletonSetDirection(uint8_t channel, int8_t direction) {
+    if (channel >= 6 || (direction != 1 && direction != -1)) return false;
+    if (s_exoControlEnabled || g_safeMotion.active()) {
+        Serial.println("[EXO] direction change rejected: stop robot control first");
+        return false;
+    }
+
+    s_exoTelemetry.directions[channel] = direction;
+    updateExoskeletonRobotTargets();
+    saveExoskeletonDirections();
+    Serial.printf("[EXO] H%u -> J%u direction set to %+d\n",
+                  channel + 1, EXOSKELETON_TO_ROBOT_JOINT[channel] + 1, direction);
+    return true;
+}
+
 static void loadExoskeletonCalibration() {
     Preferences preferences;
     if (!preferences.begin("exo-cal", true)) return;
@@ -185,6 +224,16 @@ static void loadExoskeletonCalibration() {
                              sizeof(s_exoTelemetry.zeroOffsets));
         s_exoTelemetry.calibrated = true;
         Serial.println("[EXO] saved zero calibration loaded");
+    }
+    if (preferences.getBytesLength("dir") == sizeof(s_exoTelemetry.directions)) {
+        int8_t savedDirections[6];
+        preferences.getBytes("dir", savedDirections, sizeof(savedDirections));
+        for (int i = 0; i < 6; ++i) {
+            if (savedDirections[i] == 1 || savedDirections[i] == -1) {
+                s_exoTelemetry.directions[i] = savedDirections[i];
+            }
+        }
+        Serial.println("[EXO] saved channel directions loaded");
     }
     preferences.end();
 }
@@ -337,7 +386,7 @@ void selfTestStart() {
 static void processCmd(const String& line) {
     // ── Immediate commands (not queued) ──────────────────────────
     if (line == "help") {
-        cmdRespond("help | status | test | selftest | servo start | servo end | servo j1 <j1-j6> | exo enable | exo disable | estop | reset | heartbeat\r\n");
+        cmdRespond("help | status | test | selftest | servo start | servo end | servo j1 <j1-j6> | exo enable | exo disable | exo direction <H1-H6> <-1|1> | estop | reset | heartbeat\r\n");
         return;
     }
 
@@ -378,6 +427,23 @@ static void processCmd(const String& line) {
     if (line == "exo disable") {
         exoskeletonSetControlEnabled(false);
         cmdRespond("OK: exoskeleton control disabled\r\n");
+        return;
+    }
+
+    if (line.startsWith("exo direction ")) {
+        int channel = 0;
+        int direction = 0;
+        if (sscanf(line.c_str(), "exo direction %d %d", &channel, &direction) != 2 ||
+            channel < 1 || channel > 6 || (direction != 1 && direction != -1)) {
+            cmdRespond("Usage: exo direction <1-6> <-1|1>\r\n");
+            return;
+        }
+        if (exoskeletonSetDirection(channel - 1, direction)) {
+            cmdRespondF("OK: H%d -> J%d direction %+d saved\r\n", channel,
+                        EXOSKELETON_TO_ROBOT_JOINT[channel - 1] + 1, direction);
+        } else {
+            cmdRespond("ERR: stop exoskeleton control and other motion first\r\n");
+        }
         return;
     }
 
@@ -497,19 +563,15 @@ static void processExoskeletonPacket(const String& line) {
     s_exoTelemetry.sequence = (uint32_t)values[0];
     s_exoTelemetry.lastUpdate = s_exoLastPacketMs;
     s_exoTelemetry.valid = true;
-    for (int i = 0; i < 6; ++i) {
-        s_exoTelemetry.angles[i] = values[i + 1];
-        s_exoTelemetry.millivolts[i] = values[i + 7];
+    for (int channel = 0; channel < 6; ++channel) {
+        s_exoTelemetry.angles[channel] = values[channel + 1];
+        s_exoTelemetry.millivolts[channel] = values[channel + 7];
         if (s_exoTelemetry.calibrating) {
             // Follow the settling S3 filter so one button press captures the stable pose.
-            s_exoTelemetry.zeroOffsets[i] = values[i + 1];
-            s_exoTelemetry.robotTargets[i] = 0.0f;
-        } else {
-            s_exoTelemetry.robotTargets[i] = s_exoTelemetry.calibrated
-                ? normalizeJointAngle(values[i + 1] - s_exoTelemetry.zeroOffsets[i])
-                : values[i + 1];
+            s_exoTelemetry.zeroOffsets[channel] = values[channel + 1];
         }
     }
+    updateExoskeletonRobotTargets();
     if (s_exoTelemetry.calibrating &&
         s_exoLastPacketMs - s_exoZeroCaptureStartedMs >= EXO_ZERO_CAPTURE_MS) {
         s_exoTelemetry.calibrating = false;
@@ -525,12 +587,14 @@ static void processExoskeletonPacket(const String& line) {
 
     // Forward telemetry to the Node proxy without mixing it with CNDE feedback.
     if (s_proxyPort > 0) {
-        char json[512];
+        char json[640];
         snprintf(json, sizeof(json),
                  "{\"type\":\"exoskeleton_state\",\"seq\":%lu,"
                  "\"angles\":[%.2f,%.2f,%.2f,%.2f,%.2f,%.2f],"
                  "\"robotTargets\":[%.2f,%.2f,%.2f,%.2f,%.2f,%.2f],"
                  "\"millivolts\":[%.0f,%.0f,%.0f,%.0f,%.0f,%.0f],"
+                 "\"mapping\":[1,2,4,3,6,5],"
+                 "\"directions\":[%d,%d,%d,%d,%d,%d],"
                  "\"calibrated\":%s,\"controlEnabled\":%s,"
                  "\"source\":\"p4\",\"ts\":%lu}",
                  (unsigned long)values[0],
@@ -539,6 +603,9 @@ static void processExoskeletonPacket(const String& line) {
                  s_exoTelemetry.robotTargets[2], s_exoTelemetry.robotTargets[3],
                  s_exoTelemetry.robotTargets[4], s_exoTelemetry.robotTargets[5],
                  values[7], values[8], values[9], values[10], values[11], values[12],
+                 s_exoTelemetry.directions[0], s_exoTelemetry.directions[1],
+                 s_exoTelemetry.directions[2], s_exoTelemetry.directions[3],
+                 s_exoTelemetry.directions[4], s_exoTelemetry.directions[5],
                  s_exoTelemetry.calibrated ? "true" : "false",
                  s_exoControlEnabled ? "true" : "false", (unsigned long)millis());
         s_cmdServer.beginPacket(s_proxyIP, s_proxyPort);

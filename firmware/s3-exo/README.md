@@ -4,7 +4,7 @@ ESP32-S3 (Waveshare ESP32-S3-Touch-LCD-1.69 V2.1) 上的 PlatformIO 固件，集
 
 ## 功能
 
-- **LVGL 5 页滑动 UI**：主页（关节角）/ 机器人控制 / 设置 / WiFi / 旋律
+- **LVGL 5 页滑动 UI**：主页（关节角）/ 机器人控制 / 系统状态 / 设置 / 更多；WiFi 与蜂鸣器为按需打开的子页面
 - **机器人控制**：经 P4 控制终端转发 ServoJ 伺服命令（UDP 20008）
 - **UDP 命令发送**（端口 20008）：向 P4 控制终端发送运动指令
 - **Web API**（端口 80）：REST + mDNS，远程查询/控制
@@ -17,7 +17,7 @@ ESP32-S3 (Waveshare ESP32-S3-Touch-LCD-1.69 V2.1) 上的 PlatformIO 固件，集
 
 | 组件 | 型号 | 接口 |
 |---|---|---|
-| 主控 | ESP32-S3 Xtensa LX7 双核 240MHz | 8MB Flash, 320KB RAM |
+| 主控 | ESP32-S3 Xtensa LX7 双核 240MHz | 8MB Flash, 8MB OPI PSRAM, 320KB SRAM |
 | 屏幕 | ST7789V 1.69" 240×280 | SPI |
 | 触摸 | CST816T 电容触控 | I2C 0x15 |
 | IMU | QMI8658 6 轴 | I2C 0x6B |
@@ -78,9 +78,9 @@ s3-exo/
 编辑 [src/config.h](src/config.h)：
 
 ```c
-#define WIFI_SSID       "Xiaomi_7D5E"
+#define WIFI_SSID       "ZTE-P5cS5Y"
 #define WIFI_PASS       "12345678"
-#define STATIC_IP       "192.168.58.100"
+#define STATIC_IP       "192.168.58.102"
 #define ROBOT_IP        "192.168.58.2"
 #define ROBOT_UDP_PORT  20007
 
@@ -88,7 +88,7 @@ s3-exo/
 #define SELF_TEST_TIMEOUT   300000
 ```
 
-所有 Jog、UDP 目标与自检动作都通过 `SafeServoMotion` 下发：`cmdT=0.016s`，J1 指令速度/加速度限制为 `5°/s`、`5°/s²`，J2-J6 为 `10°/s`、`10°/s²`，最终硬限制 `20°/s`，并限制加加速度。SDK 未开放的 `acc`、`vel`、`filterT`、`gain` 固定为 `0`。
+所有 Jog、UDP 目标与自检动作都通过 `SafeServoMotion` 下发：`cmdT=0.016s`，J1-J6 指令速度统一限制为 `20°/s`，单周期最大约 `0.32°`；六轴加速度统一限制为 `10°/s²`，并限制加加速度。SDK 未开放的 `acc`、`vel`、`filterT`、`gain` 固定为 `0`。
 
 ## 通信端口
 

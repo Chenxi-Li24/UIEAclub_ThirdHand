@@ -86,8 +86,9 @@ void ui_exoskeleton_refresh() {
     for (int i = 0; i < 6; ++i) {
         if (telemetry.valid) {
             ui_label_setf(w_angles[i], "%.2f deg", telemetry.angles[i]);
-            const float displayedTarget = fabsf(telemetry.robotTargets[i]) < 0.05f
-                ? 0.0f : telemetry.robotTargets[i];
+            const uint8_t robotJoint = EXOSKELETON_TO_ROBOT_JOINT[i];
+            const float displayedTarget = fabsf(telemetry.robotTargets[robotJoint]) < 0.05f
+                ? 0.0f : telemetry.robotTargets[robotJoint];
             ui_label_setf(w_targets[i], "%.2f deg", displayedTarget);
             ui_label_setf(w_voltages[i], "%.3f V  |  %.0f mV",
                           telemetry.millivolts[i] / 1000.0f, telemetry.millivolts[i]);
@@ -150,7 +151,7 @@ lv_obj_t* ui_exoskeleton_create(lv_obj_t* parent) {
         lv_obj_t* card = ui_card(scr, x, y, cardW, cardH, UI_CARD);
 
         lv_obj_t* joint = ui_label(card, 0, 0, 70, UI_CYAN, UI_F28);
-        ui_label_setf(joint, "J%d", i + 1);
+        ui_label_setf(joint, "H%d", i + 1);
 
         lv_obj_t* angleCaption = ui_label(card, 82, 5, 105, UI_DIM, UI_F16);
         lv_label_set_text(angleCaption, "ANGLE");
@@ -158,7 +159,7 @@ lv_obj_t* ui_exoskeleton_create(lv_obj_t* parent) {
         lv_label_set_text(w_angles[i], "--- deg");
 
         lv_obj_t* targetCaption = ui_label(card, 0, 78, 110, UI_DIM, UI_F16);
-        lv_label_set_text(targetCaption, "ROBOT");
+        ui_label_setf(targetCaption, "ROBOT J%d", EXOSKELETON_TO_ROBOT_JOINT[i] + 1);
         w_targets[i] = ui_label(card, 112, 74, 220, UI_CYAN, UI_F20);
         lv_label_set_text(w_targets[i], "--- deg");
         lv_obj_set_style_text_align(w_targets[i], LV_TEXT_ALIGN_RIGHT, 0);

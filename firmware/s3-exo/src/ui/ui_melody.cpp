@@ -1,81 +1,111 @@
-// ui_melody.cpp — Melody player screen (page 4)
 #include "ui/ui_melody.h"
-#include "ui/ui_core.h"
-#include "hw/melody.h"
+
 #include "hw/audio.h"
+#include "hw/melody.h"
+#include "ui/ui_core.h"
 
-static lv_obj_t *scr;
+static lv_obj_t* s_screen = nullptr;
 
-static void melody_btn_cb(lv_event_t *e) {
-  const MelodyDef *m = (const MelodyDef *)lv_event_get_user_data(e);
-  if (m) melodyPlay(m);
+static void goBack(lv_event_t* event) {
+  if (!ui_event_is_tap(event)) return;
+  ui_melody_close();
 }
 
-static void piano_cb(lv_event_t *e) {
-  uintptr_t freq = (uintptr_t)lv_event_get_user_data(e);
-  hwBeep((uint16_t)freq, 200);
+void ui_melody_close() {
+  if (!s_screen) return;
+  lv_obj_t* oldScreen = s_screen;
+  s_screen = nullptr;
+  ui_gesture_enable(true);
+  ui_screen_goto(4, false);
+  if (oldScreen) lv_obj_del_async(oldScreen);
 }
 
-static lv_obj_t *make_btn(lv_obj_t *parent, int x, int y, int w, int h,
-                          const char *text, lv_event_cb_t cb, const void *user_data) {
-  lv_obj_t *btn = lv_btn_create(parent);
-  lv_obj_set_pos(btn, x, y);
-  lv_obj_set_size(btn, w, h);
-  lv_obj_set_style_bg_color(btn, lv_color_hex(UI_CARD), 0);
-  lv_obj_set_style_radius(btn, 10, 0);
-  lv_obj_set_style_border_width(btn, 0, 0);
-  if (cb) lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, (void *)user_data);
-
-  lv_obj_t *lbl = lv_label_create(btn);
-  lv_label_set_text(lbl, text);
-  lv_obj_set_style_text_color(lbl, lv_color_hex(UI_WHITE), 0);
-  lv_obj_set_style_text_font(lbl, UI_F12, 0);
-  lv_obj_center(lbl);
-  return btn;
+static void melodyButton(lv_event_t* event) {
+  if (!ui_event_is_tap(event)) return;
+  const MelodyDef* melody = static_cast<const MelodyDef*>(lv_event_get_user_data(event));
+  if (melody) melodyPlay(melody);
 }
 
-lv_obj_t *ui_melody_create() {
-  scr = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(scr, lv_color_hex(UI_BG), 0);
-  lv_obj_set_style_pad_all(scr, 0, 0);
+static void pianoButton(lv_event_t* event) {
+  if (!ui_event_is_tap(event)) return;
+  const uintptr_t frequency = reinterpret_cast<uintptr_t>(lv_event_get_user_data(event));
+  hwBeep(static_cast<uint16_t>(frequency), 200);
+}
 
-  lv_obj_t *title = ui_label(scr, 0, 4, 240, UI_WHITE, UI_F16);
-  lv_label_set_text(title, "Melody Player");
+static lv_obj_t* makeButton(lv_obj_t* parent, int x, int y, int w, int h,
+                            const char* text, lv_event_cb_t callback,
+                            const void* userData) {
+  lv_obj_t* button = lv_btn_create(parent);
+  lv_obj_set_pos(button, x, y);
+  lv_obj_set_size(button, w, h);
+  lv_obj_set_style_bg_color(button, lv_color_hex(UI_CARD), 0);
+  lv_obj_set_style_radius(button, 9, 0);
+  lv_obj_set_style_border_width(button, 0, 0);
+  lv_obj_set_style_shadow_width(button, 0, 0);
+  lv_obj_add_flag(button, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  if (callback) lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED,
+                                    const_cast<void*>(userData));
+
+  lv_obj_t* label = lv_label_create(button);
+  lv_label_set_text(label, text);
+  lv_obj_set_style_text_color(label, lv_color_hex(UI_WHITE), 0);
+  lv_obj_set_style_text_font(label, UI_F10, 0);
+  lv_obj_center(label);
+  return button;
+}
+
+lv_obj_t* ui_melody_create() {
+  if (s_screen) return s_screen;
+  s_screen = ui_screen_create();
+
+  lv_obj_t* back = lv_btn_create(s_screen);
+  lv_obj_set_pos(back, 6, 3);
+  lv_obj_set_size(back, 34, 22);
+  lv_obj_set_style_bg_color(back, lv_color_hex(UI_CARD), 0);
+  lv_obj_set_style_radius(back, 7, 0);
+  lv_obj_set_style_shadow_width(back, 0, 0);
+  lv_obj_add_event_cb(back, goBack, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t* backLabel = lv_label_create(back);
+  lv_label_set_text(backLabel, "<");
+  lv_obj_set_style_text_color(backLabel, lv_color_hex(UI_AMBER), 0);
+  lv_obj_center(backLabel);
+
+  lv_obj_t* title = ui_label(s_screen, 44, 4, 152, UI_WHITE, UI_F16);
+  lv_label_set_text(title, "BUZZER");
   lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
 
-  const int col_w = 108, btn_h = 42, gap = 8;
-  const int start_x = 12, start_y = 30;
+  lv_obj_t* body = ui_page_content(s_screen, true);
+  const int buttonWidth = 108;
+  const int buttonHeight = 42;
 
   for (uint8_t i = 0; i < MELODY_COUNT; i++) {
-    int col = i % 2;
-    int row = i / 2;
-    make_btn(scr, start_x + col * (col_w + gap), start_y + row * (btn_h + gap),
-             col_w, btn_h, MELODY_LIST[i]->name, melody_btn_cb, MELODY_LIST[i]);
+    const int column = i % 2;
+    const int row = i / 2;
+    makeButton(body, 8 + column * 116, 3 + row * 48, buttonWidth,
+               buttonHeight, MELODY_LIST[i]->name, melodyButton,
+               MELODY_LIST[i]);
   }
 
-  ui_divider(scr, 192);
+  ui_divider(body, 151);
+  lv_obj_t* pianoTitle = ui_label(body, 8, 160, 224, UI_GREY, UI_F10);
+  lv_label_set_text(pianoTitle, "PIANO");
 
-  static const uint16_t PIANO_FREQ[] = {262, 294, 330, 349, 392, 440, 494, 523};
-  static const char *const PIANO_NAME[] = {"C", "D", "E", "F", "G", "A", "B", "c"};
-  const int piano_y = 202, key_w = 28, key_h = 44;
-
+  static const uint16_t frequencies[] = {262, 294, 330, 349, 392, 440, 494, 523};
+  static const char* const names[] = {"C", "D", "E", "F", "G", "A", "B", "c"};
   for (int i = 0; i < 8; i++) {
-    lv_obj_t *key = lv_btn_create(scr);
-    lv_obj_set_pos(key, 8 + i * (key_w + 2), piano_y);
-    lv_obj_set_size(key, key_w, key_h);
-    lv_obj_set_style_bg_color(key, lv_color_hex(0x0A9F), 0);
-    lv_obj_set_style_radius(key, 6, 0);
-    lv_obj_set_style_border_width(key, 0, 0);
-    lv_obj_add_event_cb(key, piano_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)PIANO_FREQ[i]);
-    lv_obj_t *kl = lv_label_create(key);
-    lv_label_set_text(kl, PIANO_NAME[i]);
-    lv_obj_set_style_text_color(kl, lv_color_hex(UI_WHITE), 0);
-    lv_obj_set_style_text_font(kl, UI_F10, 0);
-    lv_obj_center(kl);
+    lv_obj_t* key = makeButton(body, 4 + i * 29, 178, 26, 44, names[i],
+                               pianoButton,
+                               reinterpret_cast<void*>(static_cast<uintptr_t>(frequencies[i])));
+    lv_obj_set_style_bg_color(key, lv_color_hex(UI_BLUE), 0);
   }
 
-  ui_add_page_dots(scr, 4);
-  return scr;
+  return s_screen;
+}
+
+void ui_melody_show() {
+  if (!s_screen) ui_melody_create();
+  ui_gesture_enable(false);
+  lv_scr_load(s_screen);
 }
 
 void ui_melody_refresh() {}

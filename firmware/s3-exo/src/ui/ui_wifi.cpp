@@ -1,238 +1,254 @@
-// src/ui/ui_wifi.cpp — LVGL WiFi 设置屏幕（扫描 + 密码 + 手动输入）
-
 #include "ui/ui_wifi.h"
 
-#include "hw/pins.h"
 #include "ui/ui_core.h"
 #include "wifi_manager.h"
 
-#include <WiFi.h>
+#include <cstring>
 
-static lv_obj_t *s_scrWifi = nullptr;
-static lv_obj_t *s_scrPass = nullptr;
-static lv_obj_t *s_scrManual = nullptr;
-static lv_obj_t *s_list = nullptr;
-static lv_obj_t *s_kb = nullptr;
+static lv_obj_t* s_scanScreen = nullptr;
+static lv_obj_t* s_passwordScreen = nullptr;
+static lv_obj_t* s_manualScreen = nullptr;
+static lv_obj_t* s_list = nullptr;
+static lv_obj_t* s_scanStatus = nullptr;
+static lv_obj_t* s_passwordTitle = nullptr;
+static lv_obj_t* s_passwordInput = nullptr;
+static lv_obj_t* s_manualSsid = nullptr;
+static lv_obj_t* s_manualPassword = nullptr;
+static lv_obj_t* s_keyboard = nullptr;
+static char s_selectedSsid[33] = {};
+static uint8_t s_returnScreen = 3;
 
-static char s_selSsid[33] = {0};
-static bool s_scanDone = false;
-static uint8_t s_returnScreen = 0;
+static lv_obj_t* makeButton(lv_obj_t* parent, int x, int y, int w, int h,
+                            const char* text, lv_event_cb_t callback) {
+  lv_obj_t* button = lv_btn_create(parent);
+  lv_obj_set_pos(button, x, y);
+  lv_obj_set_size(button, w, h);
+  lv_obj_set_style_bg_color(button, lv_color_hex(UI_CARD), 0);
+  lv_obj_set_style_radius(button, 7, 0);
+  lv_obj_set_style_border_width(button, 0, 0);
+  lv_obj_set_style_shadow_width(button, 0, 0);
+  lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t* label = lv_label_create(button);
+  lv_label_set_text(label, text);
+  lv_obj_set_style_text_font(label, UI_F10, 0);
+  lv_obj_center(label);
+  return button;
+}
 
-// ── Navigation helpers ─────────────────────────────────────────────────
-static void goHome() {
-  if (s_kb) {
-    lv_obj_del(s_kb);
-    s_kb = nullptr;
-  }
+static void deleteKeyboard() {
+  if (!s_keyboard) return;
+  lv_obj_del(s_keyboard);
+  s_keyboard = nullptr;
+}
+
+static void returnToSettings(lv_event_t* event) {
+  if (event && !ui_event_is_tap(event)) return;
+  deleteKeyboard();
+  lv_obj_t* oldScan = s_scanScreen;
+  lv_obj_t* oldPassword = s_passwordScreen;
+  lv_obj_t* oldManual = s_manualScreen;
+  s_scanScreen = nullptr;
+  s_passwordScreen = nullptr;
+  s_manualScreen = nullptr;
+  s_list = nullptr;
+  s_scanStatus = nullptr;
+  s_passwordTitle = nullptr;
+  s_passwordInput = nullptr;
+  s_manualSsid = nullptr;
+  s_manualPassword = nullptr;
   ui_gesture_enable(true);
   ui_screen_goto(s_returnScreen, false);
+  if (oldPassword) lv_obj_del_async(oldPassword);
+  if (oldManual) lv_obj_del_async(oldManual);
+  if (oldScan) lv_obj_del_async(oldScan);
 }
 
-static void showPassScreen(const char *ssid) {
-  strncpy(s_selSsid, ssid, 32);
-  s_selSsid[32] = 0;
-  lv_obj_t *lbl = lv_obj_get_child(s_scrPass, 0);
-  lv_label_set_text_fmt(lbl, "SSID: %s", s_selSsid);
-  lv_textarea_set_text(lv_obj_get_child(s_scrPass, 1), "");
-  lv_scr_load(s_scrPass);
-  if (!s_kb) {
-    s_kb = lv_keyboard_create(s_scrPass);
-    lv_keyboard_set_textarea(s_kb, lv_obj_get_child(s_scrPass, 1));
-  } else {
-    lv_keyboard_set_textarea(s_kb, lv_obj_get_child(s_scrPass, 1));
+static void showScanScreen(lv_event_t* event) {
+  if (event && !ui_event_is_tap(event)) return;
+  deleteKeyboard();
+  lv_scr_load(s_scanScreen);
+}
+
+static void passwordConnect(lv_event_t* event) {
+  if (!ui_event_is_tap(event)) return;
+  const char* password = lv_textarea_get_text(s_passwordInput);
+  wifiMgrConnect(s_selectedSsid, password ? password : "");
+  returnToSettings(nullptr);
+}
+
+static void manualConnect(lv_event_t* event) {
+  if (!ui_event_is_tap(event)) return;
+  const char* ssid = lv_textarea_get_text(s_manualSsid);
+  const char* password = lv_textarea_get_text(s_manualPassword);
+  if (!ssid || !ssid[0]) return;
+  wifiMgrConnect(ssid, password ? password : "");
+  returnToSettings(nullptr);
+}
+
+static void manualFieldFocused(lv_event_t* event) {
+  if (s_keyboard) lv_keyboard_set_textarea(s_keyboard, lv_event_get_target(event));
+}
+
+static void createPasswordScreen() {
+  if (s_passwordScreen) return;
+  s_passwordScreen = ui_screen_create();
+  makeButton(s_passwordScreen, 6, 3, 34, 23, "<", showScanScreen);
+  s_passwordTitle = ui_label(s_passwordScreen, 46, 5, 188, UI_WHITE, UI_F12);
+  lv_label_set_long_mode(s_passwordTitle, LV_LABEL_LONG_DOT);
+
+  s_passwordInput = lv_textarea_create(s_passwordScreen);
+  lv_obj_set_pos(s_passwordInput, 6, 33);
+  lv_obj_set_size(s_passwordInput, 228, 38);
+  lv_textarea_set_password_mode(s_passwordInput, true);
+  lv_textarea_set_max_length(s_passwordInput, 63);
+  lv_textarea_set_placeholder_text(s_passwordInput, "Password (blank if open)");
+
+  makeButton(s_passwordScreen, 126, 242, 108, 32, "Connect", passwordConnect);
+  makeButton(s_passwordScreen, 6, 242, 108, 32, "Cancel", showScanScreen);
+}
+
+static void showPassword(const char* ssid) {
+  createPasswordScreen();
+  deleteKeyboard();
+  strncpy(s_selectedSsid, ssid, sizeof(s_selectedSsid) - 1);
+  s_selectedSsid[sizeof(s_selectedSsid) - 1] = 0;
+  lv_label_set_text_fmt(s_passwordTitle, "SSID  %s", s_selectedSsid);
+  lv_textarea_set_text(s_passwordInput, "");
+  lv_scr_load(s_passwordScreen);
+
+  s_keyboard = lv_keyboard_create(s_passwordScreen);
+  lv_obj_set_pos(s_keyboard, 0, 77);
+  lv_obj_set_size(s_keyboard, 240, 158);
+  lv_keyboard_set_textarea(s_keyboard, s_passwordInput);
+}
+
+static void networkSelected(lv_event_t* event) {
+  if (!ui_event_is_tap(event)) return;
+  const uint8_t index = static_cast<uint8_t>(
+      reinterpret_cast<uintptr_t>(lv_event_get_user_data(event)));
+  WifiScanEntry entry = {};
+  if (wifiMgrScanGet(index, entry)) showPassword(entry.ssid);
+}
+
+static void populateScanList() {
+  lv_obj_clean(s_list);
+  const uint8_t count = wifiMgrScanCount();
+  if (!count) {
+    lv_list_add_text(s_list, "No networks found");
+    lv_label_set_text(s_scanStatus, "No networks - tap Rescan");
+    return;
+  }
+
+  for (uint8_t i = 0; i < count; i++) {
+    WifiScanEntry entry = {};
+    if (!wifiMgrScanGet(i, entry)) continue;
+    char label[64];
+    snprintf(label, sizeof(label), "%s   %ld dBm%s", entry.ssid,
+             static_cast<long>(entry.rssi), entry.secure ? "  *" : "");
+    lv_obj_t* button = lv_list_add_btn(s_list, nullptr, label);
+    lv_obj_add_flag(button, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(button, networkSelected, LV_EVENT_CLICKED,
+                        reinterpret_cast<void*>(static_cast<uintptr_t>(i)));
+    lv_obj_t* labelObj = lv_obj_get_child(button, 0);
+    if (labelObj) lv_label_set_long_mode(labelObj, LV_LABEL_LONG_DOT);
+  }
+  lv_label_set_text_fmt(s_scanStatus, "%u network%s", count,
+                        count == 1 ? "" : "s");
+}
+
+static void scanFinished(String json) {
+  (void)json;
+  if (lv_scr_act() == s_scanScreen) populateScanList();
+}
+
+static void startScan() {
+  lv_obj_clean(s_list);
+  lv_list_add_text(s_list, "Scanning...");
+  lv_label_set_text(s_scanStatus, "Scanning 2.4 GHz...");
+  if (!wifiMgrScan(scanFinished)) {
+    lv_obj_clean(s_list);
+    lv_list_add_text(s_list, "Scan already running");
+    lv_label_set_text(s_scanStatus, "Busy - tap Rescan later");
   }
 }
 
-// ── WiFi scan start ────────────────────────────────────────────────────
+static void rescan(lv_event_t* event) {
+  if (ui_event_is_tap(event)) startScan();
+}
+
+static void createManualScreen() {
+  if (s_manualScreen) return;
+  s_manualScreen = ui_screen_create();
+  makeButton(s_manualScreen, 6, 3, 34, 23, "<", showScanScreen);
+  lv_obj_t* title = ui_label(s_manualScreen, 46, 5, 188, UI_WHITE, UI_F12);
+  lv_label_set_text(title, "MANUAL WIFI");
+
+  s_manualSsid = lv_textarea_create(s_manualScreen);
+  lv_obj_set_pos(s_manualSsid, 6, 32);
+  lv_obj_set_size(s_manualSsid, 228, 34);
+  lv_textarea_set_one_line(s_manualSsid, true);
+  lv_textarea_set_max_length(s_manualSsid, 32);
+  lv_textarea_set_placeholder_text(s_manualSsid, "SSID");
+  lv_obj_add_event_cb(s_manualSsid, manualFieldFocused, LV_EVENT_FOCUSED, nullptr);
+
+  s_manualPassword = lv_textarea_create(s_manualScreen);
+  lv_obj_set_pos(s_manualPassword, 6, 70);
+  lv_obj_set_size(s_manualPassword, 228, 34);
+  lv_textarea_set_one_line(s_manualPassword, true);
+  lv_textarea_set_password_mode(s_manualPassword, true);
+  lv_textarea_set_max_length(s_manualPassword, 63);
+  lv_textarea_set_placeholder_text(s_manualPassword, "Password");
+  lv_obj_add_event_cb(s_manualPassword, manualFieldFocused, LV_EVENT_FOCUSED,
+                      nullptr);
+
+  makeButton(s_manualScreen, 126, 242, 108, 32, "Connect", manualConnect);
+  makeButton(s_manualScreen, 6, 242, 108, 32, "Cancel", showScanScreen);
+}
+
+static void showManual(lv_event_t* event) {
+  if (!ui_event_is_tap(event)) return;
+  createManualScreen();
+  deleteKeyboard();
+  lv_textarea_set_text(s_manualSsid, "");
+  lv_textarea_set_text(s_manualPassword, "");
+  lv_scr_load(s_manualScreen);
+  s_keyboard = lv_keyboard_create(s_manualScreen);
+  lv_obj_set_pos(s_keyboard, 0, 109);
+  lv_obj_set_size(s_keyboard, 240, 126);
+  lv_keyboard_set_textarea(s_keyboard, s_manualSsid);
+}
+
+void ui_wifi_create() {
+  if (s_scanScreen) return;
+  s_scanScreen = ui_screen_create();
+  makeButton(s_scanScreen, 6, 3, 34, 23, "<", returnToSettings);
+  lv_obj_t* title = ui_label(s_scanScreen, 46, 5, 104, UI_WHITE, UI_F12);
+  lv_label_set_text(title, "WIFI SETUP");
+  s_scanStatus = ui_label(s_scanScreen, 148, 6, 86, UI_GREY, UI_F10);
+  lv_obj_set_style_text_align(s_scanStatus, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_label_set_long_mode(s_scanStatus, LV_LABEL_LONG_DOT);
+
+  s_list = lv_list_create(s_scanScreen);
+  lv_obj_set_pos(s_list, 6, 32);
+  lv_obj_set_size(s_list, 228, 199);
+  lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_style_bg_color(s_list, lv_color_hex(0x0841), 0);
+  lv_obj_set_style_border_width(s_list, 0, 0);
+  lv_obj_set_style_radius(s_list, 8, 0);
+
+  makeButton(s_scanScreen, 6, 241, 108, 33, "Rescan", rescan);
+  makeButton(s_scanScreen, 126, 241, 108, 33, "Manual", showManual);
+}
+
 void ui_wifi_show() {
   s_returnScreen = ui_current_screen();
   ui_gesture_enable(false);
-  if (s_kb) {
-    lv_obj_del(s_kb);
-    s_kb = nullptr;
-  }
-  lv_obj_clean(s_list);
-  lv_list_add_text(s_list, "Scanning...");
-  s_scanDone = false;
-  WiFi.scanNetworks(true);  // async scan
-  lv_scr_load(s_scrWifi);
+  deleteKeyboard();
+  if (!s_scanScreen) ui_wifi_create();
+  lv_scr_load(s_scanScreen);
+  startScan();
 }
 
-// ── Populate scan list ─────────────────────────────────────────────────
-static void populateScanList(int n) {
-  lv_obj_clean(s_list);
-  for (int i = 0; i < n; i++) {
-    String label = WiFi.SSID(i);
-    label += "  (";
-    label += WiFi.RSSI(i);
-    label += "dBm)";
-    if (WiFi.encryptionType(i) != WIFI_AUTH_OPEN)
-      label += " *";
-    lv_obj_t *btn = lv_list_add_btn(s_list, NULL, label.c_str());
-    lv_obj_set_user_data(btn, (void *)(intptr_t)i);
-    lv_obj_add_event_cb(
-        btn,
-        [](lv_event_t *ev) {
-          int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(ev));
-          String ssid = WiFi.SSID(idx);
-          showPassScreen(ssid.c_str());
-        },
-        LV_EVENT_CLICKED, NULL);
-  }
-  if (n == 0)
-    lv_list_add_text(s_list, "No networks found");
-}
+void ui_wifi_close() { returnToSettings(nullptr); }
 
-// ── Manual SSID entry screen ───────────────────────────────────────────
-static lv_obj_t *s_taSsid, *s_taPass;
-
-static void onManualWifi(lv_event_t *e) {
-  if (s_kb) {
-    lv_obj_del(s_kb);
-    s_kb = nullptr;
-  }
-  lv_textarea_set_text(s_taSsid, "");
-  lv_textarea_set_text(s_taPass, "");
-  lv_scr_load(s_scrManual);
-  s_kb = lv_keyboard_create(s_scrManual);
-  lv_keyboard_set_textarea(s_kb, s_taSsid);
-}
-
-static void onManualConnect(lv_event_t *e) {
-  const char *ssid = lv_textarea_get_text(s_taSsid);
-  const char *pass = lv_textarea_get_text(s_taPass);
-  if (ssid[0] == 0)
-    return;
-  wifiMgrConnect(ssid, pass ? pass : "");
-  if (s_kb) {
-    lv_obj_del(s_kb);
-    s_kb = nullptr;
-  }
-  goHome();
-}
-
-// ── Password-done handler ──────────────────────────────────────────────
-static void onPassConnect(lv_event_t *e) {
-  const char *pass = lv_textarea_get_text(lv_obj_get_child(s_scrPass, 1));
-  wifiMgrConnect(s_selSsid, pass ? pass : "");
-  if (s_kb) {
-    lv_obj_del(s_kb);
-    s_kb = nullptr;
-  }
-  goHome();
-}
-
-// ── Create all WiFi screens ────────────────────────────────────────────
-void ui_wifi_create() {
-  // --- WiFi scan screen ---
-  s_scrWifi = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(s_scrWifi, lv_color_black(), 0);
-
-  lv_obj_t *title = lv_label_create(s_scrWifi);
-  lv_label_set_text(title, "WiFi Setup");
-  lv_obj_set_style_text_color(title, lv_color_white(), 0);
-  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 5);
-
-  s_list = lv_list_create(s_scrWifi);
-  lv_obj_set_size(s_list, LCD_PHYS_W - 10, 180);
-  lv_obj_align(s_list, LV_ALIGN_TOP_MID, 0, 28);
-
-  lv_obj_t *btnManual = lv_btn_create(s_scrWifi);
-  lv_obj_set_size(btnManual, 80, 30);
-  lv_obj_align(btnManual, LV_ALIGN_BOTTOM_RIGHT, -5, -5);
-  lv_label_set_text(lv_label_create(btnManual), "Manual");
-  lv_obj_center(lv_obj_get_child(btnManual, 0));
-  lv_obj_add_event_cb(btnManual, onManualWifi, LV_EVENT_CLICKED, NULL);
-
-  lv_obj_t *btnBack = lv_btn_create(s_scrWifi);
-  lv_obj_set_size(btnBack, 60, 30);
-  lv_obj_align(btnBack, LV_ALIGN_BOTTOM_LEFT, 5, -5);
-  lv_label_set_text(lv_label_create(btnBack), "Back");
-  lv_obj_center(lv_obj_get_child(btnBack, 0));
-  lv_obj_add_event_cb(btnBack, [](lv_event_t *e) { goHome(); }, LV_EVENT_CLICKED, NULL);
-
-  // --- Password screen ---
-  s_scrPass = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(s_scrPass, lv_color_black(), 0);
-
-  lv_obj_t *lblSsid = lv_label_create(s_scrPass);
-  lv_obj_align(lblSsid, LV_ALIGN_TOP_LEFT, 5, 5);
-
-  lv_obj_t *taPass = lv_textarea_create(s_scrPass);
-  lv_obj_set_size(taPass, 230, 40);
-  lv_obj_align(taPass, LV_ALIGN_TOP_MID, 0, 30);
-  lv_textarea_set_password_mode(taPass, true);
-  lv_textarea_set_max_length(taPass, 63);
-  lv_textarea_set_placeholder_text(taPass, "Password");
-
-  lv_obj_t *btnConnect = lv_btn_create(s_scrPass);
-  lv_obj_set_size(btnConnect, 80, 30);
-  lv_obj_align(btnConnect, LV_ALIGN_BOTTOM_RIGHT, -5, -5);
-  lv_label_set_text(lv_label_create(btnConnect), "Connect");
-  lv_obj_center(lv_obj_get_child(btnConnect, 0));
-  lv_obj_add_event_cb(btnConnect, onPassConnect, LV_EVENT_CLICKED, NULL);
-
-  lv_obj_t *btnPBack = lv_btn_create(s_scrPass);
-  lv_obj_set_size(btnPBack, 60, 30);
-  lv_obj_align(btnPBack, LV_ALIGN_BOTTOM_LEFT, 5, -5);
-  lv_label_set_text(lv_label_create(btnPBack), "Back");
-  lv_obj_center(lv_obj_get_child(btnPBack, 0));
-  lv_obj_add_event_cb(
-      btnPBack, [](lv_event_t *e) { lv_scr_load(s_scrWifi); }, LV_EVENT_CLICKED, NULL);
-
-  // --- Manual SSID entry screen ---
-  s_scrManual = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(s_scrManual, lv_color_black(), 0);
-
-  lv_obj_t *mlbl = lv_label_create(s_scrManual);
-  lv_label_set_text(mlbl, "SSID:");
-  lv_obj_align(mlbl, LV_ALIGN_TOP_LEFT, 5, 5);
-  s_taSsid = lv_textarea_create(s_scrManual);
-  lv_obj_set_size(s_taSsid, 230, 36);
-  lv_obj_align(s_taSsid, LV_ALIGN_TOP_MID, 0, 25);
-  lv_textarea_set_max_length(s_taSsid, 32);
-  lv_textarea_set_placeholder_text(s_taSsid, "Network name");
-
-  mlbl = lv_label_create(s_scrManual);
-  lv_label_set_text(mlbl, "Password:");
-  lv_obj_align(mlbl, LV_ALIGN_TOP_LEFT, 5, 68);
-  s_taPass = lv_textarea_create(s_scrManual);
-  lv_obj_set_size(s_taPass, 230, 36);
-  lv_obj_align(s_taPass, LV_ALIGN_TOP_MID, 0, 90);
-  lv_textarea_set_password_mode(s_taPass, true);
-  lv_textarea_set_max_length(s_taPass, 63);
-  lv_textarea_set_placeholder_text(s_taPass, "Password");
-
-  lv_obj_t *btnMConn = lv_btn_create(s_scrManual);
-  lv_obj_set_size(btnMConn, 80, 30);
-  lv_obj_align(btnMConn, LV_ALIGN_BOTTOM_RIGHT, -5, -5);
-  lv_label_set_text(lv_label_create(btnMConn), "Connect");
-  lv_obj_center(lv_obj_get_child(btnMConn, 0));
-  lv_obj_add_event_cb(btnMConn, onManualConnect, LV_EVENT_CLICKED, NULL);
-
-  lv_obj_t *btnMBack = lv_btn_create(s_scrManual);
-  lv_obj_set_size(btnMBack, 60, 30);
-  lv_obj_align(btnMBack, LV_ALIGN_BOTTOM_LEFT, 5, -5);
-  lv_label_set_text(lv_label_create(btnMBack), "Back");
-  lv_obj_center(lv_obj_get_child(btnMBack, 0));
-  lv_obj_add_event_cb(
-      btnMBack, [](lv_event_t *e) { lv_scr_load(s_scrWifi); }, LV_EVENT_CLICKED, NULL);
-}
-
-// ── Poll scan completion ───────────────────────────────────────────────
-// Called from main loop; returns true if scan finished
-bool ui_wifi_poll_scan() {
-  if (s_scanDone)
-    return false;
-  int n = WiFi.scanComplete();
-  if (n >= 0) {
-    s_scanDone = true;
-    populateScanList(n);
-    return true;
-  }
-  return false;
-}
-
-lv_obj_t *ui_wifi_screen() {
-  return s_scrWifi;
-}
+lv_obj_t* ui_wifi_screen() { return s_scanScreen; }

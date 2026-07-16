@@ -21,11 +21,11 @@ public:
 private:
     static constexpr uint32_t PERIOD_US = 16000;
     static constexpr float CMD_T_SEC = 0.016f;
-    static constexpr float COMMAND_SPEED_DEG_S = 10.0f;
-    static constexpr float J1_COMMAND_SPEED_DEG_S = 5.0f;
+    static constexpr float COMMAND_SPEED_DEG_S = 20.0f;
+    static constexpr float J1_COMMAND_SPEED_DEG_S = 20.0f;
     static constexpr float HARD_SPEED_LIMIT_DEG_S = 20.0f;
     static constexpr float MAX_ACCEL_DEG_S2 = 10.0f;
-    static constexpr float J1_MAX_ACCEL_DEG_S2 = 5.0f;
+    static constexpr float J1_MAX_ACCEL_DEG_S2 = 10.0f;
     static constexpr float MAX_JERK_DEG_S3 = 80.0f;
     static constexpr float CONTROLLER_OMEGA = 1.5f;
     static constexpr float POSITION_EPSILON_DEG = 0.05f;

@@ -80,7 +80,7 @@ static void handleStatus(AsyncWebServerRequest* req) {
   sysObj["fs_used"]     = LittleFS.usedBytes();
   sysObj["fs_total"]    = LittleFS.totalBytes();
 
-  const RobotStateData& rs = g_cnde.getState();
+  const RobotStateData rs = g_cnde.getState();
   JsonObject robotObj = doc["robot"].to<JsonObject>();
   robotObj["cnde_connected"] = g_cnde.isConnected();
   robotObj["valid"]   = rs.valid;
@@ -112,7 +112,7 @@ static void handleBrightness(AsyncWebServerRequest* req, JsonVariant& json) {
 
 static void handleSound(AsyncWebServerRequest* req, JsonVariant& json) {
   if (!json["sound"].is<bool>()) { req->send(400, "application/json", "{\"ok\":false}"); return; }
-  _settings.sound = json["sound"].as<bool>();
+  settings().sound = json["sound"].as<bool>();
   settingsSave();
   req->send(200, "application/json", "{\"ok\":true}");
 }
@@ -121,11 +121,13 @@ static void handleWifi(AsyncWebServerRequest* req, JsonVariant& json) {
   const char* action = json["action"];
   if (!action) { req->send(400, "application/json", "{\"ok\":false}"); return; }
   if (strcmp(action, "scan") == 0) {
-    wifiMgrScan([req](String result) {
+    if (!wifiMgrScan([req](String result) {
       AsyncWebServerResponse* r = req->beginResponse(200, "application/json", result);
       r->addHeader("Access-Control-Allow-Origin", "*");
       req->send(r);
-    });
+    })) {
+      req->send(409, "application/json", "{\"error\":\"scan_busy\"}");
+    }
     return;
   }
   if (strcmp(action, "connect") == 0) {

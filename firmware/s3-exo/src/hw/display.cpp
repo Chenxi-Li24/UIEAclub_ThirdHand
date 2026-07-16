@@ -53,8 +53,10 @@ bool hwDisplayInit() {
 bool hwDisplayInitLVGL() {
   lv_init();
 
-  // Allocate DMA-capable draw buffers (1/4 screen each = ~33KB x2)
-  size_t bufPixels = LCD_PHYS_W * LCD_PHYS_H / 4;
+  // A 24-line double buffer is enough for SPI DMA and releases about 44 KB
+  // of internal RAM for the CNDE and ServoJ FreeRTOS task stacks.
+  constexpr size_t DRAW_BUFFER_LINES = 24;
+  const size_t bufPixels = LCD_PHYS_W * DRAW_BUFFER_LINES;
   s_buf1 = (lv_color_t *)heap_caps_malloc(bufPixels * sizeof(lv_color_t), MALLOC_CAP_DMA);
   s_buf2 = (lv_color_t *)heap_caps_malloc(bufPixels * sizeof(lv_color_t), MALLOC_CAP_DMA);
   if (!s_buf1 || !s_buf2) {
@@ -77,7 +79,8 @@ bool hwDisplayInitLVGL() {
   lv_log_register_print_cb([](const char *buf) { Serial.print(buf); });
 #endif
 
-  Serial.println("hwDisplay: LVGL init OK");
+  Serial.printf("hwDisplay: LVGL init OK (%u lines x2)\n",
+                (unsigned)DRAW_BUFFER_LINES);
   return true;
 }
 

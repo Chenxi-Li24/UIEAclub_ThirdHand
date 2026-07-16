@@ -723,34 +723,93 @@ html, body {
 }
 
 .exo-channel {
-  display: grid;
-  grid-template-columns: 24px 1fr;
-  gap: 2px 6px;
-  align-items: baseline;
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   font-family: 'Consolas', monospace;
+  min-width: 0;
 }
 
-.exo-channel span {
-  grid-row: 1 / 3;
+.exo-channel-head,
+.exo-readings,
+.exo-target {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  min-width: 0;
+}
+
+.exo-channel-head b {
+  color: var(--accent);
+  font-size: 0.76rem;
+}
+
+.exo-channel-head span {
   color: var(--text-secondary);
-  font-size: 0.72rem;
+  font-size: 0.58rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.exo-channel strong {
+.exo-channel-head em {
+  color: var(--text-primary);
+  font-size: 0.65rem;
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.exo-readings {
+  margin-top: 5px;
+}
+
+.exo-angle {
   color: var(--accent);
   font-size: 0.78rem;
   font-weight: 600;
-  text-align: right;
 }
 
-.exo-channel small {
+.exo-voltage {
   color: var(--text-secondary);
   font-size: 0.65rem;
-  text-align: right;
 }
+
+.exo-target {
+  margin-top: 3px;
+  color: var(--text-secondary);
+  font-size: 0.62rem;
+}
+
+.exo-target-value {
+  color: var(--text-primary);
+  font-size: 0.68rem;
+}
+
+.exo-direction {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.exo-direction button {
+  height: 24px;
+  padding: 0 3px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.6rem;
+  cursor: pointer;
+}
+
+.exo-direction button:last-child { border-right: 0; }
+.exo-direction button.active { background: var(--accent); color: var(--bg-primary); }
+.exo-direction button:disabled { cursor: not-allowed; opacity: 0.45; }
+.exo-direction button.active:disabled { opacity: 0.65; }
 
 .exo-control-toggle {
   padding-top: 8px;
@@ -973,7 +1032,14 @@ html, body {
     right: calc(-100vw + 40px);
   }
 
+  #topbar { padding: 0 8px; }
+  .brand-name { font-size: 0.9rem; }
   .topbar-brand .brand-model { display: none; }
+  .topbar-status,
+  .topbar-actions { gap: 6px; }
+  .conn-ip,
+  #theme-select { display: none; }
+  .btn-estop { padding: 0 10px; }
 
   .statusbar-joints {
     gap: 8px;

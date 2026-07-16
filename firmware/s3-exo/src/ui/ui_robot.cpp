@@ -1,232 +1,159 @@
-﻿// ui_robot.cpp — Page 1: Robot Control — jog + self-test + quick commands
 #include "ui/ui_robot.h"
+
+#include "config.h"
+#include "robot/cnde_client.h"
+#include "robot/fairino_udp.h"
 #include "ui/ui_core.h"
 #include "wifi_manager.h"
-#include "robot/fairino_udp.h"
-#include "robot/cnde_client.h"
-#include "config.h"
 
-static lv_obj_t *scr;
-static lv_obj_t *w_jogLabels[6], *w_testStatus, *w_testProgress;
-static float jogDelta = 5.0f;
+static lv_obj_t* s_screen = nullptr;
+static lv_obj_t* s_jointValues[6] = {nullptr};
+static lv_obj_t* s_deltaValue = nullptr;
+static lv_obj_t* s_status = nullptr;
+static float s_jogDelta = 5.0f;
 
-// Helper: send ServoJ with delta from current position
-static void jogJoint(int axis, float delta) {
+struct JogAction {
+  uint8_t axis;
+  int8_t direction;
+};
+
+static JogAction s_jogActions[12];
+
+static void jogJoint(uint8_t axis, float delta) {
   if (!wifiMgrConnected()) return;
-  const RobotStateData& rs = g_cnde.getState();
-  float joints[6] = {0};
-  if (rs.valid) {
-    for (int i = 0; i < 6; i++) joints[i] = rs.jointPos[i];
-  }
+  const RobotStateData state = g_cnde.getState();
+  if (!state.valid) return;
+
+  float joints[6];
+  for (int i = 0; i < 6; i++) joints[i] = state.jointPos[i];
   joints[axis] += delta;
   safeMotionSetTarget(joints, false);
 }
 
-// Jog button callbacks
-static void jogJ1p(lv_event_t* e) { jogJoint(0,  jogDelta); }
-static void jogJ1m(lv_event_t* e) { jogJoint(0, -jogDelta); }
-static void jogJ2p(lv_event_t* e) { jogJoint(1,  jogDelta); }
-static void jogJ2m(lv_event_t* e) { jogJoint(1, -jogDelta); }
-static void jogJ3p(lv_event_t* e) { jogJoint(2,  jogDelta); }
-static void jogJ3m(lv_event_t* e) { jogJoint(2, -jogDelta); }
-static void jogJ4p(lv_event_t* e) { jogJoint(3,  jogDelta); }
-static void jogJ4m(lv_event_t* e) { jogJoint(3, -jogDelta); }
-static void jogJ5p(lv_event_t* e) { jogJoint(4,  jogDelta); }
-static void jogJ5m(lv_event_t* e) { jogJoint(4, -jogDelta); }
-static void jogJ6p(lv_event_t* e) { jogJoint(5,  jogDelta); }
-static void jogJ6m(lv_event_t* e) { jogJoint(5, -jogDelta); }
+static void onJog(lv_event_t* event) {
+  if (!ui_event_is_tap(event)) return;
+  const JogAction* action = static_cast<const JogAction*>(lv_event_get_user_data(event));
+  if (!action) return;
+  jogJoint(action->axis, action->direction * s_jogDelta);
+}
 
-// Self-test trigger
-extern void selfTestStart();
-static void onSelfTest(lv_event_t* e) {
-  if (!wifiMgrConnected()) return;
+static void onSelfTest(lv_event_t* event) {
+  if (!ui_event_is_tap(event) || !wifiMgrConnected()) return;
   selfTestStart();
+  lv_label_set_text(s_status, "Self-test requested");
 }
 
-// Quick commands
-static void onServoStart(lv_event_t* e) {
-  if (!wifiMgrConnected()) return;
-  safeMotionStartHold();
+static void onServoStart(lv_event_t* event) {
+  if (!ui_event_is_tap(event) || !wifiMgrConnected()) return;
+  lv_label_set_text(s_status,
+                    safeMotionStartHold() ? "Servo hold active" : "Robot data unavailable");
 }
-static void onServoEnd(lv_event_t* e) {
+
+static void onServoEnd(lv_event_t* event) {
+  if (!ui_event_is_tap(event)) return;
   safeMotionStop();
+  lv_label_set_text(s_status, "Servo stopped");
 }
-static void onTimingTest(lv_event_t* e) {
-  if (!wifiMgrConnected()) return;
+
+static void onTimingTest(lv_event_t* event) {
+  if (!ui_event_is_tap(event) || !wifiMgrConnected()) return;
   g_fairino.servoTimingTest();
+  lv_label_set_text(s_status, "Timing test sent");
 }
 
-// Delta adjust
-static void onDeltaUp(lv_event_t* e) {
-  if (jogDelta < 20.0f) jogDelta += 1.0f;
-}
-static void onDeltaDown(lv_event_t* e) {
-  if (jogDelta > 1.0f) jogDelta -= 1.0f;
+static void updateDeltaLabel() {
+  if (s_deltaValue) lv_label_set_text_fmt(s_deltaValue, "%.0f deg", s_jogDelta);
 }
 
-static lv_obj_t* makeJogRow(lv_obj_t* parent, int y, const char* name,
-                             lv_event_cb_t cbMinus, lv_event_cb_t cbPlus, int idx) {
-  lv_obj_t* lbl = ui_label(parent, 8, y+2, 24, UI_GREY, UI_F10);
-  lv_label_set_text(lbl, name);
+static void onDeltaDown(lv_event_t* event) {
+  if (!ui_event_is_tap(event)) return;
+  if (s_jogDelta > 1.0f) s_jogDelta -= 1.0f;
+  updateDeltaLabel();
+}
 
-  w_jogLabels[idx] = ui_label(parent, 36, y+2, 44, UI_WHITE, UI_F12);
-  lv_label_set_text(w_jogLabels[idx], "--.-");
+static void onDeltaUp(lv_event_t* event) {
+  if (!ui_event_is_tap(event)) return;
+  if (s_jogDelta < 20.0f) s_jogDelta += 1.0f;
+  updateDeltaLabel();
+}
 
-  lv_obj_t* btnM = lv_btn_create(parent);
-  lv_obj_set_size(btnM, 28, 22);
-  lv_obj_set_pos(btnM, 84, y);
-  lv_obj_set_style_bg_color(btnM, lv_color_hex(0x330000), 0);
-  lv_obj_set_style_radius(btnM, 4, 0);
-  lv_obj_set_style_border_width(btnM, 0, 0);
-  lv_obj_set_style_shadow_width(btnM, 0, 0);
-  lv_obj_add_event_cb(btnM, cbMinus, LV_EVENT_CLICKED, NULL);
-  lv_obj_t* tM = lv_label_create(btnM);
-  lv_label_set_text(tM, "-");
-  lv_obj_set_style_text_color(tM, lv_color_hex(UI_RED), 0);
-  lv_obj_center(tM);
+static lv_obj_t* makeButton(lv_obj_t* parent, int x, int y, int w, int h,
+                            const char* text, uint32_t color,
+                            lv_event_cb_t callback, void* userData = nullptr) {
+  lv_obj_t* button = lv_btn_create(parent);
+  lv_obj_set_pos(button, x, y);
+  lv_obj_set_size(button, w, h);
+  lv_obj_set_style_bg_color(button, lv_color_hex(color), 0);
+  lv_obj_set_style_radius(button, 7, 0);
+  lv_obj_set_style_border_width(button, 0, 0);
+  lv_obj_set_style_shadow_width(button, 0, 0);
+  lv_obj_add_flag(button, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, userData);
 
-  lv_obj_t* btnP = lv_btn_create(parent);
-  lv_obj_set_size(btnP, 28, 22);
-  lv_obj_set_pos(btnP, 116, y);
-  lv_obj_set_style_bg_color(btnP, lv_color_hex(0x003300), 0);
-  lv_obj_set_style_radius(btnP, 4, 0);
-  lv_obj_set_style_border_width(btnP, 0, 0);
-  lv_obj_set_style_shadow_width(btnP, 0, 0);
-  lv_obj_add_event_cb(btnP, cbPlus, LV_EVENT_CLICKED, NULL);
-  lv_obj_t* tP = lv_label_create(btnP);
-  lv_label_set_text(tP, "+");
-  lv_obj_set_style_text_color(tP, lv_color_hex(UI_GREEN), 0);
-  lv_obj_center(tP);
+  lv_obj_t* label = lv_label_create(button);
+  lv_label_set_text(label, text);
+  lv_obj_set_style_text_color(label, lv_color_hex(UI_WHITE), 0);
+  lv_obj_set_style_text_font(label, UI_F10, 0);
+  lv_obj_center(label);
+  return button;
+}
 
-  return btnP;
+static void makeJogRow(lv_obj_t* parent, int y, int axis) {
+  lv_obj_t* card = ui_card(parent, 8, y, 224, 34, UI_CARD);
+  lv_obj_t* name = ui_label(card, 6, 8, 24, UI_GREY, UI_F10);
+  lv_label_set_text_fmt(name, "J%d", axis + 1);
+
+  s_jointValues[axis] = ui_label(card, 32, 7, 72, UI_WHITE, UI_F12);
+  lv_label_set_text(s_jointValues[axis], "--.-");
+  lv_obj_set_style_text_align(s_jointValues[axis], LV_TEXT_ALIGN_RIGHT, 0);
+
+  JogAction* minus = &s_jogActions[axis * 2];
+  minus->axis = axis;
+  minus->direction = -1;
+  JogAction* plus = &s_jogActions[axis * 2 + 1];
+  plus->axis = axis;
+  plus->direction = 1;
+
+  makeButton(card, 112, 4, 46, 26, "-", 0x3800, onJog, minus);
+  makeButton(card, 166, 4, 46, 26, "+", 0x01E0, onJog, plus);
 }
 
 void ui_robot_refresh() {
-  if (!scr) return;
-  const RobotStateData& rs = g_cnde.getState();
-  if (rs.valid) {
-    for (int i = 0; i < 6; i++) {
-      ui_label_setf(w_jogLabels[i], "%.1f", rs.jointPos[i]);
-    }
+  if (!s_screen) return;
+  const RobotStateData state = g_cnde.getState();
+  for (int i = 0; i < 6; i++) {
+    if (state.valid) ui_label_setf(s_jointValues[i], "%.1f", state.jointPos[i]);
+    else lv_label_set_text(s_jointValues[i], "--.-");
   }
 }
 
 lv_obj_t* ui_robot_create() {
-  scr = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(scr, lv_color_hex(UI_BG), 0);
-  lv_obj_set_style_pad_all(scr, 0, 0);
-  lv_obj_set_scroll_dir(scr, LV_DIR_VER);
+  s_screen = ui_screen_create();
 
-  lv_obj_t* title = ui_label(scr, 12, 4, 216, UI_GREY, UI_F12);
+  lv_obj_t* title = ui_label(s_screen, 12, 4, 216, UI_GREY, UI_F12);
   lv_label_set_text(title, "ROBOT CONTROL");
 
-  // Jog section — 6 rows
-  int y = 28;
-  makeJogRow(scr, y,      "J1", jogJ1m, jogJ1p, 0);
-  makeJogRow(scr, y+26,   "J2", jogJ2m, jogJ2p, 1);
-  makeJogRow(scr, y+52,   "J3", jogJ3m, jogJ3p, 2);
-  makeJogRow(scr, y+78,   "J4", jogJ4m, jogJ4p, 3);
-  makeJogRow(scr, y+104,  "J5", jogJ5m, jogJ5p, 4);
-  makeJogRow(scr, y+130,  "J6", jogJ6m, jogJ6p, 5);
+  lv_obj_t* body = ui_page_content(s_screen, true);
+  for (int i = 0; i < 6; i++) makeJogRow(body, 2 + i * 38, i);
 
-  // Delta adjust
-  y = 190;
-  lv_obj_t* deltaLabel = ui_label(scr, 12, y, 144, UI_WHITE, UI_F10);
-  lv_label_set_text(deltaLabel, "Jog delta");
+  lv_obj_t* delta = ui_card(body, 8, 234, 224, 44, 0x1082);
+  lv_obj_t* deltaTitle = ui_label(delta, 8, 4, 92, UI_GREY, UI_F10);
+  lv_label_set_text(deltaTitle, "JOG STEP");
+  s_deltaValue = ui_label(delta, 8, 21, 92, UI_AMBER, UI_F12);
+  updateDeltaLabel();
+  makeButton(delta, 112, 9, 46, 28, "-", UI_CARD, onDeltaDown);
+  makeButton(delta, 166, 9, 46, 28, "+", UI_CARD, onDeltaUp);
 
-  lv_obj_t* btnDown = lv_btn_create(scr);
-  lv_obj_set_size(btnDown, 24, 20);
-  lv_obj_set_pos(btnDown, 12, y+16);
-  lv_obj_set_style_bg_color(btnDown, lv_color_hex(UI_CARD), 0);
-  lv_obj_set_style_radius(btnDown, 4, 0);
-  lv_obj_set_style_border_width(btnDown, 0, 0);
-  lv_obj_set_style_shadow_width(btnDown, 0, 0);
-  lv_obj_add_event_cb(btnDown, onDeltaDown, LV_EVENT_CLICKED, NULL);
-  lv_obj_t* td = lv_label_create(btnDown);
-  lv_label_set_text(td, "-");
-  lv_obj_center(td);
+  lv_obj_t* actionsTitle = ui_label(body, 8, 290, 224, UI_DIM, UI_F10);
+  lv_label_set_text(actionsTitle, "ACTIONS - TAP ONLY");
+  makeButton(body, 8, 309, 108, 36, "Self-Test", 0x6B20, onSelfTest);
+  makeButton(body, 124, 309, 108, 36, "Servo Start", 0x01E0, onServoStart);
+  makeButton(body, 8, 353, 108, 36, "Servo End", 0x3800, onServoEnd);
+  makeButton(body, 124, 353, 108, 36, "Timing Test", UI_CARD, onTimingTest);
 
-  static lv_obj_t* deltaVal;
-  deltaVal = ui_label(scr, 42, y+16, 60, UI_AMBER, UI_F16);
-  lv_label_set_text_fmt(deltaVal, "%.0f deg", jogDelta);
+  s_status = ui_label(body, 8, 399, 224, UI_DIM, UI_F10);
+  lv_label_set_text(s_status, "Swipe vertically for actions");
 
-  lv_obj_t* btnUp = lv_btn_create(scr);
-  lv_obj_set_size(btnUp, 24, 20);
-  lv_obj_set_pos(btnUp, 72, y+16);
-  lv_obj_set_style_bg_color(btnUp, lv_color_hex(UI_CARD), 0);
-  lv_obj_set_style_radius(btnUp, 4, 0);
-  lv_obj_set_style_border_width(btnUp, 0, 0);
-  lv_obj_set_style_shadow_width(btnUp, 0, 0);
-  lv_obj_add_event_cb(btnUp, onDeltaUp, LV_EVENT_CLICKED, NULL);
-  lv_obj_t* tu = lv_label_create(btnUp);
-  lv_label_set_text(tu, "+");
-  lv_obj_center(tu);
-
-  y = 232;
-
-  // Self-test button
-  lv_obj_t* btnST = lv_btn_create(scr);
-  lv_obj_set_size(btnST, 100, 32);
-  lv_obj_set_pos(btnST, 12, y);
-  lv_obj_set_style_bg_color(btnST, lv_color_hex(0x663300), 0);
-  lv_obj_set_style_radius(btnST, 6, 0);
-  lv_obj_set_style_border_width(btnST, 0, 0);
-  lv_obj_set_style_shadow_width(btnST, 0, 0);
-  lv_obj_add_event_cb(btnST, onSelfTest, LV_EVENT_CLICKED, NULL);
-  lv_obj_t* stLabel = lv_label_create(btnST);
-  lv_label_set_text(stLabel, "Self-Test");
-  lv_obj_set_style_text_color(stLabel, lv_color_hex(UI_AMBER), 0);
-  lv_obj_center(stLabel);
-
-  // Servo Start button
-  lv_obj_t* btnSS = lv_btn_create(scr);
-  lv_obj_set_size(btnSS, 100, 32);
-  lv_obj_set_pos(btnSS, 126, y);
-  lv_obj_set_style_bg_color(btnSS, lv_color_hex(0x003300), 0);
-  lv_obj_set_style_radius(btnSS, 6, 0);
-  lv_obj_set_style_border_width(btnSS, 0, 0);
-  lv_obj_set_style_shadow_width(btnSS, 0, 0);
-  lv_obj_add_event_cb(btnSS, onServoStart, LV_EVENT_CLICKED, NULL);
-  stLabel = lv_label_create(btnSS);
-  lv_label_set_text(stLabel, "Servo Start");
-  lv_obj_set_style_text_color(stLabel, lv_color_hex(UI_GREEN), 0);
-  lv_obj_center(stLabel);
-
-  y += 40;
-
-  // Servo End button
-  lv_obj_t* btnSE = lv_btn_create(scr);
-  lv_obj_set_size(btnSE, 100, 32);
-  lv_obj_set_pos(btnSE, 12, y);
-  lv_obj_set_style_bg_color(btnSE, lv_color_hex(0x330000), 0);
-  lv_obj_set_style_radius(btnSE, 6, 0);
-  lv_obj_set_style_border_width(btnSE, 0, 0);
-  lv_obj_set_style_shadow_width(btnSE, 0, 0);
-  lv_obj_add_event_cb(btnSE, onServoEnd, LV_EVENT_CLICKED, NULL);
-  stLabel = lv_label_create(btnSE);
-  lv_label_set_text(stLabel, "Servo End");
-  lv_obj_set_style_text_color(stLabel, lv_color_hex(UI_RED), 0);
-  lv_obj_center(stLabel);
-
-  // Timing test
-  lv_obj_t* btnTT = lv_btn_create(scr);
-  lv_obj_set_size(btnTT, 100, 32);
-  lv_obj_set_pos(btnTT, 126, y);
-  lv_obj_set_style_bg_color(btnTT, lv_color_hex(UI_CARD), 0);
-  lv_obj_set_style_radius(btnTT, 6, 0);
-  lv_obj_set_style_border_width(btnTT, 0, 0);
-  lv_obj_set_style_shadow_width(btnTT, 0, 0);
-  lv_obj_add_event_cb(btnTT, onTimingTest, LV_EVENT_CLICKED, NULL);
-  stLabel = lv_label_create(btnTT);
-  lv_label_set_text(stLabel, "Timing Test");
-  lv_obj_center(stLabel);
-
-  y += 40;
-  w_testStatus = ui_label(scr, 12, y, 214, UI_DIM, UI_F10);
-
-  // Make sure the content area is tall enough for scrolling
-  lv_obj_set_height(scr, 300);
-
-  ui_add_page_dots(scr, 1);
-  return scr;
+  ui_add_page_dots(s_screen, 1);
+  return s_screen;
 }
