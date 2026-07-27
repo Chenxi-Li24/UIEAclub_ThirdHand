@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ThirdHand - FR5 机械臂控制</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- E-STOP 全屏遮罩 -->
+  <div id="estop-overlay">
+    <div class="estop-box">
+      <div class="estop-icon">⏹</div>
+      <div class="estop-text">已急停</div>
+      <div class="estop-sub">E-STOP 已触发，请排除故障后复位</div>
+    </div>
+  </div>
+
+  <!-- 主布局：grid 三行 -->
+  <div id="app">
+    <!-- 顶部状态栏 -->
+    <header id="topbar">
+      <div class="topbar-brand">
+        <span class="brand-name">ThirdHand</span>
+        <span class="brand-model">FR5</span>
+      </div>
+
+      <div class="topbar-status">
+        <div class="conn-indicator" id="conn-indicator">
+          <span class="conn-dot" id="conn-dot"></span>
+          <span class="conn-ip" id="conn-ip">未连接</span>
+        </div>
+        <span class="hb-label" id="hb-label">hb: --</span>
+        <span class="state-badge" id="state-badge">--</span>
+      </div>
+
+      <div class="topbar-actions">
+        <button class="btn-voice-toggle" id="btn-voice-toggle" type="button"
+                title="语音控制" aria-controls="voice-panel" aria-expanded="false">
+          <span class="voice-toggle-led" id="voice-toggle-led" data-state="offline"></span>
+          <svg class="voice-toggle-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V6a3.5 3.5 0 1 0-7 0v6a3.5 3.5 0 0 0 3.5 3.5Z"/>
+            <path d="M5.5 11.5V12a6.5 6.5 0 0 0 13 0v-.5M12 18.5V22M8.5 22h7"/>
+          </svg>
+          <span class="voice-toggle-label">语音</span>
+        </button>
+        <button class="btn-estop" id="btn-estop-top" title="急停">⏹ 急停</button>
+        <select id="theme-select" title="切换配色">
+          <option value="deepspace">科技深空</option>
+          <option value="industrial">工业橙黑</option>
+          <option value="cyber">赛博紫黑</option>
+          <option value="dark">暗黑</option>
+          <option value="green">暗绿</option>
+          <option value="blue">暗蓝</option>
+          <option value="purple">暗紫</option>
+          <option value="orange">暗橙</option>
+          <option value="light">亮白</option>
+        </select>
+        <button class="btn-drawer-toggle" id="btn-drawer-toggle" title="控制面板">☰</button>
+      </div>
+    </header>
+
+    <!-- 3D 视口（grid 中间行，自动撑满） -->
+    <div id="viewport">
+      <div id="three-container"></div>
+
+      <!-- 左上角视图工具浮动栏 -->
+      <div id="view-tools">
+        <button class="tool-btn active" id="btn-tool-grid" title="切换网格">⊞</button>
+        <button class="tool-btn active" id="btn-tool-axes" title="切换坐标轴">✛</button>
+        <button class="tool-btn" id="btn-tool-reset" title="重置视角">⟲</button>
+        <div class="tool-divider"></div>
+        <button class="tool-btn active" id="btn-tool-floor" title="地面安装">⬛</button>
+        <button class="tool-btn" id="btn-tool-wall" title="壁挂安装">⬜</button>
+      </div>
+
+      <!-- 连接配置 + 日志开关浮动条 -->
+      <div id="conn-bar">
+        <input type="text" id="wifi-host" class="conn-input" value="192.168.58.100" placeholder="ESP32 IP">
+        <input type="number" id="wifi-port" class="conn-input conn-port" value="20008" placeholder="端口">
+        <button class="conn-btn" id="btn-connect">连接</button>
+        <button class="conn-btn conn-btn-danger" id="btn-disconnect" style="display:none">断开</button>
+        <div class="conn-divider"></div>
+        <button class="conn-btn conn-btn-log" id="btn-log-toggle" title="通信日志">📋日志</button>
+      </div>
+    </div>
+
+    <!-- 底部状态栏 -->
+    <footer id="statusbar">
+      <div class="statusbar-joints" id="statusbar-joints">
+        <span class="sjoint" id="sj1">J1:--°</span>
+        <span class="sjoint" id="sj2">J2:--°</span>
+        <span class="sjoint" id="sj3">J3:--°</span>
+        <span class="sjoint" id="sj4">J4:--°</span>
+        <span class="sjoint" id="sj5">J5:--°</span>
+        <span class="sjoint" id="sj6">J6:--°</span>
+      </div>
+      <div class="statusbar-right">
+        <span class="stcp" id="stcp">TCP: --</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- 右侧控制抽屉（body 级浮动，不参与 grid） -->
+  <aside id="control-drawer">
+    <div class="drawer-handle" id="drawer-handle" title="收起面板">◂</div>
+
+    <div class="drawer-content">
+      <!-- 关节控制 -->
+      <div class="drawer-section" id="sec-joints">
+        <div class="sec-header">
+          <span>关节控制</span>
+          <button class="sec-toggle">▾</button>
+        </div>
+        <div class="sec-body" id="joint-controls-body">
+          <!-- 动态生成 -->
+        </div>
+      </div>
+
+      <!-- 预设位置 -->
+      <div class="drawer-section" id="sec-presets">
+        <div class="sec-header">
+          <span>预设位置</span>
+          <button class="sec-toggle">▾</button>
+        </div>
+        <div class="sec-body">
+          <div class="preset-grid" id="preset-grid"></div>
+        </div>
+      </div>
+
+      <!-- 操作 -->
+      <div class="drawer-section" id="sec-actions">
+        <div class="sec-header">
+          <span>操作</span>
+          <button class="sec-toggle">▾</button>
+        </div>
+        <div class="sec-body">
+          <button class="action-btn action-primary" id="btn-send">发送到机械臂</button>
+          <div class="action-row">
+            <button class="action-btn action-secondary" id="btn-home">六轴 0° 姿态</button>
+            <button class="action-btn action-warning" id="btn-reset" style="display:none">复位</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 外骨骼传感器 -->
+      <div class="drawer-section" id="sec-exoskeleton">
+        <div class="sec-header">
+          <span>外骨骼传感器</span>
+          <button class="sec-toggle">▾</button>
+        </div>
+        <div class="sec-body">
+          <div class="exo-status-row">
+            <span class="exo-link" id="exo-link">等待数据</span>
+            <span class="exo-sequence" id="exo-sequence">#--</span>
+          </div>
+          <div class="exo-grid">
+            <div class="exo-channel" id="exo-ch1">
+              <div class="exo-channel-head"><b>H1</b><span>肩部左右侧动</span><em>→ J1</em></div>
+              <div class="exo-readings"><strong class="exo-angle">--°</strong><small class="exo-voltage">-- mV</small></div>
+              <div class="exo-target">目标 J1 <b class="exo-target-value">--°</b></div>
+              <div class="exo-direction" aria-label="H1 角度增加方向"><button type="button" class="active" data-channel="1" data-direction="1">+ 正向</button><button type="button" data-channel="1" data-direction="-1">− 反向</button></div>
+            </div>
+            <div class="exo-channel" id="exo-ch2">
+              <div class="exo-channel-head"><b>H2</b><span>肩部前后摆动</span><em>→ J2</em></div>
+              <div class="exo-readings"><strong class="exo-angle">--°</strong><small class="exo-voltage">-- mV</small></div>
+              <div class="exo-target">目标 J2 <b class="exo-target-value">--°</b></div>
+              <div class="exo-direction" aria-label="H2 角度增加方向"><button type="button" class="active" data-channel="2" data-direction="1">+ 正向</button><button type="button" data-channel="2" data-direction="-1">− 反向</button></div>
+            </div>
+            <div class="exo-channel" id="exo-ch3">
+              <div class="exo-channel-head"><b>H3</b><span>小臂绕轴旋转</span><em>→ J4</em></div>
+              <div class="exo-readings"><strong class="exo-angle">--°</strong><small class="exo-voltage">-- mV</small></div>
+              <div class="exo-target">目标 J4 <b class="exo-target-value">--°</b></div>
+              <div class="exo-direction" aria-label="H3 角度增加方向"><button type="button" class="active" data-channel="3" data-direction="1">+ 正向</button><button type="button" data-channel="3" data-direction="-1">− 反向</button></div>
+            </div>
+            <div class="exo-channel" id="exo-ch4">
+              <div class="exo-channel-head"><b>H4</b><span>肘部屈伸</span><em>→ J3</em></div>
+              <div class="exo-readings"><strong class="exo-angle">--°</strong><small class="exo-voltage">-- mV</small></div>
+              <div class="exo-target">目标 J3 <b class="exo-target-value">--°</b></div>
+              <div class="exo-direction" aria-label="H4 角度增加方向"><button type="button" class="active" data-channel="4" data-direction="1">+ 正向</button><button type="button" data-channel="4" data-direction="-1">− 反向</button></div>
+            </div>
+            <div class="exo-channel" id="exo-ch5">
+              <div class="exo-channel-head"><b>H5</b><span>手腕旋转</span><em>→ J6</em></div>
+              <div class="exo-readings"><strong class="exo-angle">--°</strong><small class="exo-voltage">-- mV</small></div>
+              <div class="exo-target">目标 J6 <b class="exo-target-value">--°</b></div>
+              <div class="exo-direction" aria-label="H5 角度增加方向"><button type="button" class="active" data-channel="5" data-direction="1">+ 正向</button><button type="button" data-channel="5" data-direction="-1">− 反向</button></div>
+            </div>
+            <div class="exo-channel" id="exo-ch6">
+              <div class="exo-channel-head"><b>H6</b><span>手腕前后弯曲</span><em>→ J5</em></div>
+              <div class="exo-readings"><strong class="exo-angle">--°</strong><small class="exo-voltage">-- mV</small></div>
+              <div class="exo-target">目标 J5 <b class="exo-target-value">--°</b></div>
+              <div class="exo-direction" aria-label="H6 角度增加方向"><button type="button" class="active" data-channel="6" data-direction="1">+ 正向</button><button type="button" data-channel="6" data-direction="-1">− 反向</button></div>
+            </div>
+          </div>
+          <label class="toggle-label exo-control-toggle">
+            <input type="checkbox" id="chk-exo-control">
+            <span>外骨骼驱动机械臂</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- 实时角度 -->
+      <div class="drawer-section" id="sec-rt-angles">
+        <div class="sec-header">
+          <span>实时角度</span>
+          <button class="sec-toggle">▾</button>
+        </div>
+        <div class="sec-body">
+          <div class="rt-angles" id="rt-angles-display">
+            <span class="rt-angle" id="rt-j1">J1: --°</span>
+            <span class="rt-angle" id="rt-j2">J2: --°</span>
+            <span class="rt-angle" id="rt-j3">J3: --°</span>
+            <span class="rt-angle" id="rt-j4">J4: --°</span>
+            <span class="rt-angle" id="rt-j5">J5: --°</span>
+            <span class="rt-angle" id="rt-j6">J6: --°</span>
+          </div>
+          <label class="toggle-label">
+            <input type="checkbox" id="chk-sync" checked>
+            <span>同步 3D 模型</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- 末端位置 -->
+      <div class="drawer-section" id="sec-tcp">
+        <div class="sec-header">
+          <span>末端位置 (mm)</span>
+          <button class="sec-toggle">▾</button>
+        </div>
+        <div class="sec-body">
+          <div class="tcp-grid">
+            <span class="tcp-label">X</span><span class="tcp-val" id="tcp-x">0.0</span>
+            <span class="tcp-label">Y</span><span class="tcp-val" id="tcp-y">0.0</span>
+            <span class="tcp-label">Z</span><span class="tcp-val" id="tcp-z">0.0</span>
+            <span class="tcp-label">Rx</span><span class="tcp-val" id="tcp-rx">0.0</span>
+            <span class="tcp-label">Ry</span><span class="tcp-val" id="tcp-ry">0.0</span>
+            <span class="tcp-label">Rz</span><span class="tcp-val" id="tcp-rz">0.0</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 夹爪控制 -->
+      <div class="drawer-section" id="sec-gripper">
+        <div class="sec-header">
+          <span>夹爪控制</span>
+          <button class="sec-toggle">▾</button>
+        </div>
+        <div class="sec-body">
+          <div class="gripper-status">
+            <div class="gripper-row">
+              <span>状态：</span>
+              <span class="gripper-state" id="gripper-state-badge">--</span>
+              <span style="margin-left:12px">负载：</span><span id="gripper-load">--</span>
+            </div>
+            <div class="gripper-row">
+              <span>位置：</span><span id="gripper-pos-val">--</span>
+              <span style="margin-left:12px">开度：</span><span id="gripper-pos">--</span>
+            </div>
+          </div>
+          <div class="action-row">
+            <button class="action-btn action-secondary" id="btn-gripper-open">OPEN<br>张开</button>
+            <button class="action-btn action-primary" id="btn-gripper-close">CLOSE<br>闭合</button>
+            <button class="action-btn" id="btn-gripper-grip" style="background:#e94560;color:#fff">GRIP<br>夹取检测</button>
+          </div>
+          <div class="gripper-slider" style="margin-top:8px">
+            <div style="display:flex;justify-content:space-between;font-size:0.8rem;margin-bottom:4px">
+              <span>目标位置</span>
+              <span><strong id="gripper-slider-val">0</strong></span>
+            </div>
+            <input type="range" id="gripper-pos-slider" min="0" max="3800" value="0"
+                   style="width:100%">
+            <button class="action-btn action-secondary" id="btn-gripper-go"
+                    style="width:100%;margin-top:4px;padding:6px">GO 移动到目标位置</button>
+          </div>
+          <div class="action-row" style="margin-top:6px">
+            <button class="action-btn" id="btn-gripper-half" style="font-size:0.8rem;padding:6px">50%</button>
+            <button class="action-btn" id="btn-gripper-qtr" style="font-size:0.8rem;padding:6px">25%</button>
+            <button class="action-btn" id="btn-gripper-3qtr" style="font-size:0.8rem;padding:6px">75%</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 通信日志面板（底部上滑） -->
+  <section id="voice-panel" aria-hidden="true" aria-label="语音控制">
+    <header class="voice-panel-header">
+      <div class="voice-panel-title">
+        <span class="voice-kicker">VOICE LINK / V1</span>
+        <strong>语音控制</strong>
+      </div>
+      <div class="voice-header-actions">
+        <span class="voice-status-chip" id="voice-ai-status" data-state="offline">AI 离线</span>
+        <button class="voice-icon-button" id="voice-panel-close" type="button" aria-label="关闭语音面板">×</button>
+      </div>
+    </header>
+
+    <div class="voice-signal-ribbon" aria-label="麦克风实时输入电平">
+      <div class="voice-signal-track">
+        <div class="voice-signal-fill" id="voice-level-fill"></div>
+        <div class="voice-signal-grid"></div>
+      </div>
+      <span class="voice-signal-value"><b id="voice-level-value">0</b> LVL</span>
+      <time id="voice-recording-time">00:00</time>
+    </div>
+
+    <div class="voice-panel-body">
+      <section class="voice-config-block" aria-labelledby="voice-ai-label">
+        <div class="voice-block-heading">
+          <div>
+            <span class="voice-block-index">01</span>
+            <strong id="voice-ai-label">本地 AI</strong>
+          </div>
+          <span class="voice-session-status" id="voice-session-status" data-state="idle">等待操作</span>
+        </div>
+        <div class="voice-inline-control">
+          <input id="voice-ai-endpoint" type="url" value="ws://127.0.0.1:3001/v1/voice"
+                 aria-label="本地 AI WebSocket 地址" spellcheck="false">
+          <button id="voice-ai-reconnect" type="button">重连</button>
+        </div>
+      </section>
+
+      <section class="voice-config-block" aria-labelledby="voice-mic-label">
+        <div class="voice-block-heading">
+          <div>
+            <span class="voice-block-index">02</span>
+            <strong id="voice-mic-label">音频输入</strong>
+          </div>
+          <span class="voice-status-chip" id="voice-mic-status" data-state="off">麦克风关闭</span>
+        </div>
+        <div class="voice-device-row">
+          <select id="voice-device-select" aria-label="选择麦克风" disabled>
+            <option value="">启用后检测麦克风</option>
+          </select>
+          <button id="voice-mic-toggle" type="button">启用麦克风</button>
+        </div>
+        <p class="voice-help">只在录音期间向 3001 发送音频；关闭麦克风会立即释放设备。</p>
+      </section>
+
+      <section class="voice-capture-block" aria-labelledby="voice-capture-label">
+        <div class="voice-block-heading">
+          <div>
+            <span class="voice-block-index">03</span>
+            <strong id="voice-capture-label">语音会话</strong>
+          </div>
+          <span class="voice-limit">最长 00:30</span>
+        </div>
+        <button class="voice-record-button" id="voice-record-toggle" type="button" disabled>
+          <span class="voice-record-symbol" aria-hidden="true"></span>
+          <span>开始录音</span>
+        </button>
+      </section>
+
+      <section class="voice-conversation-block" aria-labelledby="voice-transcript-label">
+        <div class="voice-block-heading">
+          <div>
+            <span class="voice-block-index">04</span>
+            <strong id="voice-transcript-label">转写记录</strong>
+          </div>
+          <span class="voice-mock-badge">MOCK / 不控制硬件</span>
+        </div>
+        <div class="voice-conversation" id="voice-conversation" aria-live="polite">
+          <div class="voice-empty">
+            <span class="voice-empty-mark">THV1</span>
+            <p>启用麦克风并连接本地 AI，然后开始一次语音会话。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="voice-intent-card" id="voice-intent-card" aria-live="assertive" hidden>
+        <div class="voice-intent-topline">
+          <span>候选动作</span>
+          <b id="voice-intent-confidence">--</b>
+        </div>
+        <strong id="voice-intent-name">—</strong>
+        <p id="voice-intent-source">来自：“—”</p>
+        <div class="voice-intent-actions">
+          <button class="voice-cancel-button" id="voice-intent-cancel" type="button">取消</button>
+          <button class="voice-confirm-button" id="voice-intent-confirm" type="button">确认模拟执行</button>
+        </div>
+      </section>
+    </div>
+
+    <footer class="voice-panel-footer">
+      <span class="voice-privacy-dot"></span>
+      麦克风必须由用户手动启用；此原型不会向机器人发送控制消息。
+    </footer>
+  </section>
+
+  <div id="log-panel">
+    <div class="log-header">
+      <span>通信日志</span>
+      <button class="log-close" id="btn-log-close">✕</button>
+    </div>
+    <div class="log-area" id="log-area"></div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./js/lib/three.module.js",
+      "three/addons/": "./js/lib/"
+    }
+  }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+    import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
+    const T = {};
+    for (const k of Object.getOwnPropertyNames(THREE)) T[k] = THREE[k];
+    T.STLLoader = STLLoader;
+    T.ColladaLoader = ColladaLoader;
+    window.THREE = T;
+    console.log('[boot] THREE global ready');
+    const s = document.createElement('script');
+    s.src = 'js/lib/URDFLoader.js';
+    s.onload = () => {
+      console.log('[boot] URDFLoader ready');
+      const m = document.createElement('script');
+      m.type = 'module';
+      m.src = 'js/main.js';
+      document.body.appendChild(m);
+    };
+    document.head.appendChild(s);
+  </script>
+</body>
+</html>
