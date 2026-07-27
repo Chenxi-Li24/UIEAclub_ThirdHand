@@ -14,6 +14,7 @@ managed_components/
 
 # Node.js (web-control)
 web-control/server/node_modules/
+web-control/server/voice-control-preview.png
 
 # Archives
 *.zip

@@ -5,7 +5,12 @@
   "main": "proxy.js",
   "scripts": {
     "start": "node proxy.js",
-    "dev": "node proxy.js"
+    "dev": "node proxy.js",
+    "voice:dev": "node voice-dev.js",
+    "voice:preview": "node voice-preview.js",
+    "voice:mock": "node voice-mock.js",
+    "test:voice-protocol": "node protocol-smoke.js",
+    "test:voice-browser": "node browser-smoke.js"
   },
   "dependencies": {
     "express": "^4.21.0",

@@ -1,6 +1,7 @@
 console.log('[main.js] Loading modules...');
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { VoiceControl } from './voice-control.js';
 console.log('[main.js] Modules imported, THREE keys:', Object.keys(THREE).length);
 
 // === SceneManager ===
@@ -773,6 +774,11 @@ class UIControls {
 // === App Entry ===
 function startApp() {
   console.log('[App] ThirdHand Web Control starting...');
+
+  // Voice UI is independent from the 3D model and the robot WebSocket.
+  // It must stay available even when model loading or robot connectivity fails.
+  const voice = new VoiceControl();
+  voice.init();
 
   const ws = new WSClient();
   const viewport = document.getElementById('three-container');
